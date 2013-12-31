@@ -1,19 +1,76 @@
 // ==UserScript==
 // @name          Craigslist Fusion
 // @description   View craigslist listing, image previews, emails, details all in one.
+// @match       http://*.craigslist.org/
+// @match       http://*.craigslist.ca/
 // @match       http://*.craigslist.org/*
 // @match       http://*.craigslist.ca/*
 // @match       http://*.craigslist.co.uk/*
 // @match       http://*.craigslist.tld/*
-// @exclude       http://*.craigslist.org/
-// @exclude       http://*.craigslist.ca/
-// @exclude       http://*.craigslist.co.uk/
-// @exclude       http://*.craigslist.tld/
 // @exclude       http://forums.craigslist.*/*
+// 
 // @require       http://usocheckup.redirectme.net/57662.js
+// @version 9.8.9
 // ==/UserScript==
+/*
+ * commented out tld == top level domain
+ * exclude       http://*.craigslist.tld/
+ */
 
 /*  Copyright (c) 2009-2013 By Vy Ho
+  9.8.9:
+   - Fixed parsing html entity code to support more entities
+  9.8.8:
+   - Fixed favorites rendering (dollar sign in the subject line)
+   - Fixed favorite print rendering
+     + Dollar sign in the subject line
+     + Images causes rendering to fail
+  9.8.7:
+   - Fixed filter code, filter result area not found due to changes to CL code (auto emails were not working)
+  9.8.6:
+   - Fixed email subject encode/decoding problem (dollar sign issue)
+  9.8.5:
+   - Updated code to use assynchronous call to retrieve email address due to some web browsers not supporting sync call
+  9.8.4:
+   - Added code to decode HTML entity characters in detail subject/title text
+   - Updated bookmarks label and delete button L&F
+  9.8.3:
+   - Fixed parsing post update date due to recent changes by CL
+  9.8.2:
+   - Fixed reply email parsing code due to changes by CL again
+   - Fixed date parsing code due to changes by CL
+  9.8.1:
+   - Updated to fix a few typos for getting email address
+   - Updated to fix a previous missed refactoring code (click on detail text to see details)
+  9.8:
+   - Updated background gradient color
+   - Added preference for background gradient color
+   - Added background color for preferences
+   - Added support for embed images in the post details
+     + See various new preferences for turn on/off, grid size, image height
+   - Fixed email parsing code due to change by CL
+  9.7.7:
+   - Fixed search option for housing type not shown
+  9.7.6:
+   - Fixed to add the checkbox for search by title
+  9.7.5:
+   - Set default of elapsed datetime to 2 
+  9.7.4:
+   - Updated to correct parsing of reply email due by CL changes
+  9.7.3:
+   - Fixed show hidden entries due to changes by CL
+   - Fixed post date/elapsed time due to changes by CL
+  9.7.2:
+   - Added bookmarks for searches
+  9.7.1:
+   - Added link in toolbar to go to top of page
+  9.7:
+   - Fixed outside image with "_" in the URL issue
+   - Updated various layout/styles of toolbar area
+   - Updated various layout/styles of favorite area
+   - Updated layout of filter area
+   - Partially updated to workaround the changes to Map View
+   - Added width to limit print view width
   9.6.9:
    - Fixed search form errors due to new changes from CL
   9.6.8:
@@ -458,6 +515,7 @@ release the author(s) of any liability related to their usage of this software.
 
     craigslist.fusion.CraigslistFusion = function(browserWin, configs) {
         this.PREFIX = "*cs*.";
+        this.MAX_BOOKMARK_ENTRIES = 100;
         this.MAX_SPAM_ENTRIES = 1000;
         this.MAX_FAV_ENTRIES = 300;
         this.MAX_HIDE_ENTRIES = 6000;
@@ -474,6 +532,8 @@ release the author(s) of any liability related to their usage of this software.
         
         this.FAV_LIST = "fav.list";
         
+        this.BOOKMARK_LIST = "bookmark.list";
+        
         this.HIDE_LIST = "hide.list";
 
         this.THUMBNAIL_IMAGE = "_thumbnail_img";
@@ -485,6 +545,7 @@ release the author(s) of any liability related to their usage of this software.
         this.IMG_BAND_CTRL_WIDTH = 40;
 
         this.FAV_WINDOW = "FAV_WINDOW";
+        this.BOOKMARK_WINDOW = "BOOKMARK_WINDOW";
         this.PREFERENCE_WINDOW = "PREFERENCE_WINDOW";
         this.INFO_WINDOW = "INFO_WINDOW";
         this.PHOTO_WINDOW = "PHOTO_WINDOW";
@@ -511,6 +572,8 @@ release the author(s) of any liability related to their usage of this software.
         
         this.initialize = function(browserWin) {
             try {
+                this.browserWin = browserWin;
+                
                 var filters = new Array();
                 filters[filters.length] = /^http[s]?\:\/\/[a-zA-Z0-9].*?\.craigslist\..*?\/\d+\.html$/;
                 filters[filters.length] = /^http[s]?\:\/\/[a-zA-Z0-9].*?\.craigslist\..*?\/forums\/.*/;
@@ -523,7 +586,6 @@ release the author(s) of any liability related to their usage of this software.
                 
                 var i;
                 var location = browserWin.location.href; //browserWin.document.URL;
-                
                 /*
                 if (typeof browserWin.document.body == "undefined" || browserWin.document.body.childNodes.length <= 1) {
                     if (browserWin.document.body.childNodes.length == 1) {
@@ -536,16 +598,34 @@ release the author(s) of any liability related to their usage of this software.
                 }
                 */
                 //todo: change to lower case here
+                var homes = new Array();
+                homes[homes.length] = /^http[s]?\:\/\/[a-zA-Z0-9].*?\.craigslist\.[.a-z]*\/$/;
+                homes[homes.length] = /^http[s]?\:\/\/[a-zA-Z0-9].*?\.[a-zA-Z0-9].*?\.craigslist\.[.a-z]*\/$/;
+                for (i = 0; i < homes.length; i++) {
+                    if (location.match(homes[i])) {
+                        this.bookmarkMap = new craigslist.fusion.HashMap();
+                        this.bookmarkList = new Array();
+                        this.loadBookmarkList();
+                        this.showBookmarks(browserWin, null);
+                        return;
+                    }
+                }
+                
                 for (i = 0; i < filters.length; i++) {
                     if (location.match(filters[i])) {
                         return;
                     }
                 }
-                this.browserWin = browserWin;  
                 
                 if (this.preInitialize) {
                     this.preInitialize();
                 }
+                
+                this.bookmarkMap = new craigslist.fusion.HashMap();
+                this.bookmarkList = new Array();
+                this.loadBookmarkList();
+                
+                this.addBookmark(null, true, null);
                 
                 sess = craigslist.fusion.Utilities.rand(5);
                 
@@ -572,7 +652,7 @@ release the author(s) of any liability related to their usage of this software.
                 this.favMap = new craigslist.fusion.HashMap();
                 this.favList = new Array();
                 this.loadFavList();
-
+                
                 this.hideMap = new craigslist.fusion.HashMap();
                 this.hideList = new Array();
                 this.loadHideList();
@@ -606,8 +686,8 @@ release the author(s) of any liability related to their usage of this software.
                 }
                 this.preferenceWindow = new craigslist.fusion.MiniWin(this.PREFERENCE_WINDOW, 500, 400, "Preferences" + sess, null, this.browserWin.document, this.browserWin, this.winManager);
 
-    //            this.preferenceWindow.addSizeChangeListener(new craigslist.fusion.WindowSizeChangeListener(this.PREFERENCE_WINDOW, browserWin));
-    //            this.preferenceWindow.addLayoutChangeListener(new craigslist.fusion.WindowLayoutListener(this.PREFERENCE_WINDOW, browserWin));
+                //            this.preferenceWindow.addSizeChangeListener(new craigslist.fusion.WindowSizeChangeListener(this.PREFERENCE_WINDOW, browserWin));
+                //            this.preferenceWindow.addLayoutChangeListener(new craigslist.fusion.WindowLayoutListener(this.PREFERENCE_WINDOW, browserWin));
                 this.preferenceWindow.addClosingListener(new craigslist.fusion.WindowClosingListener(this.PREFERENCE_WINDOW));
                 this.preferenceWindow.addVisibleListener(new craigslist.fusion.WindowHideListener());
                 this.preferenceWindow.setMinimizeTitle(minimizeTitle);
@@ -627,6 +707,17 @@ release the author(s) of any liability related to their usage of this software.
                 this.favWindow.setInactiveBorderColor(inactiveWindowBorderColor);
                 this.layout.addComponent(this.favWindow, craigslist.fusion.DockLayout.LEFT);
 
+                if (this.bookmarkWindow != null) {
+                    this.bookmarkWindow.destroy(null);
+                }
+                this.bookmarkWindow = new craigslist.fusion.MiniWin(this.BOOKMARK_WINDOW, 500, 400, "Bookmarks" + sess, null, this.browserWin.document, this.browserWin, this.winManager);
+                this.bookmarkWindow.addClosingListener(new craigslist.fusion.WindowClosingListener(this.BOOKMARK_WINDOW));
+                this.bookmarkWindow.addVisibleListener(new craigslist.fusion.WindowHideListener());
+                this.bookmarkWindow.setMinimizeTitle(minimizeTitle);
+                this.bookmarkWindow.setActiveBorderColor(activeWindowBorderColor);
+                this.bookmarkWindow.setInactiveBorderColor(inactiveWindowBorderColor);
+                this.layout.addComponent(this.bookmarkWindow, craigslist.fusion.DockLayout.LEFT);
+                
                 if (this.previewWindow != null) {
                     this.previewWindow.destroy(null);
                 }
@@ -684,7 +775,7 @@ release the author(s) of any liability related to their usage of this software.
                 }
                 this.infoWindow = new craigslist.fusion.MiniWin(this.INFO_WINDOW, 500, 400, "Details" + sess, null, this.browserWin.document, this.browserWin, this.winManager);
 
-    //            this.infoWindow.addSizeChangeListener(new craigslist.fusion.WindowSizeChangeListener(this.INFO_WINDOW, browserWin));
+                //            this.infoWindow.addSizeChangeListener(new craigslist.fusion.WindowSizeChangeListener(this.INFO_WINDOW, browserWin));
                 this.infoWindow.addLayoutChangeListener(new craigslist.fusion.WindowLayoutListener(this.INFO_WINDOW, browserWin));
                 this.infoWindow.addClosingListener(new craigslist.fusion.WindowClosingListener(this.INFO_WINDOW, craigslist.fusion.Utilities.runWith(this, this.onDetailWindowHide, "", "")));
                 //this.infoWindow.addVisibleListener(new WindowVisibleChangeListener(this, "onWindowVisibleChange"));
@@ -702,7 +793,7 @@ release the author(s) of any liability related to their usage of this software.
                 this.templateWindow = new craigslist.fusion.MiniWin(this.TEMPLATE_WINDOW,
                     500, 400, "Email Template Manager" + sess, null, this.browserWin.document, this.browserWin, this.winManager);
 
-    //            this.templateWindow.addSizeChangeListener(new craigslist.fusion.WindowSizeChangeListener(this.TEMPLATE_WINDOW, browserWin));
+                //            this.templateWindow.addSizeChangeListener(new craigslist.fusion.WindowSizeChangeListener(this.TEMPLATE_WINDOW, browserWin));
                 this.templateWindow.addLayoutChangeListener(new craigslist.fusion.WindowLayoutListener(this.TEMPLATE_WINDOW, browserWin));
                 this.templateWindow.addClosingListener(new craigslist.fusion.WindowClosingListener(this.TEMPLATE_WINDOW));
                 this.templateWindow.addVisibleListener(new craigslist.fusion.WindowHideListener());
@@ -718,7 +809,7 @@ release the author(s) of any liability related to their usage of this software.
                 this.googleMap = new craigslist.fusion.MiniWin(this.GOOGLEMAP_WINDOW, 800, 600,
                     "Google Map" + sess, null, this.browserWin.document, this.browserWin, this.winManager);
                 this.googleMap.setEnableFocusPane(true);
-    //            this.googleMap.addSizeChangeListener(new craigslist.fusion.WindowSizeChangeListener(this.GOOGLEMAP_WINDOW, browserWin));
+                //            this.googleMap.addSizeChangeListener(new craigslist.fusion.WindowSizeChangeListener(this.GOOGLEMAP_WINDOW, browserWin));
                 this.googleMap.addLayoutChangeListener(new craigslist.fusion.WindowLayoutListener(this.GOOGLEMAP_WINDOW, browserWin));
                 this.googleMap.addClosingListener(new craigslist.fusion.WindowClosingListener(this.GOOGLEMAP_WINDOW));
                 this.googleMap.addVisibleListener(new craigslist.fusion.WindowHideListener());
@@ -755,11 +846,12 @@ release the author(s) of any liability related to their usage of this software.
                 this.preferenceWindow.setVisible(false);
                 this.previewWindow.setVisible(false);
                 this.favWindow.setVisible(false);
+                this.bookmarkWindow.setVisible(false);
 
                 this.listingWin = new craigslist.fusion.MiniWin(this.LISTING_WINDOW,
                     500, 400, "Listing" + sess, null, this.browserWin.document, this.browserWin, this.winManager);
 
-    //            this.listingWin.addSizeChangeListener(new craigslist.fusion.WindowSizeChangeListener(this.LISTING_WINDOW, browserWin));
+                //            this.listingWin.addSizeChangeListener(new craigslist.fusion.WindowSizeChangeListener(this.LISTING_WINDOW, browserWin));
                 this.listingWin.addLayoutChangeListener(new craigslist.fusion.WindowLayoutListener(this.LISTING_WINDOW, browserWin));
                 //this.listingWin.addClosingListener(new craigslist.fusion.WindowClosingListener(this.LISTING_WINDOW,
                 //    craigslist.fusion.Utilities.runWith(this, this.onDetailWindowHide, "", "")));
@@ -773,30 +865,37 @@ release the author(s) of any liability related to their usage of this software.
                
                 //div.detailAreaClass img { maxHeight: 100%; }
                
-//                var detailAreaClass = "{ width: 100%; height: 300px; overflow-y: scroll; " +
-//                    "overflow-x: hidden; word-wrap: break-word; white-space: normal;" +
-//                    "border: thin solid black;  border-bottom: thin solid lightgray;}";  // 
-//                var detailAreaClass = "{ width: 100%; height: 300px; overflow-y: scroll; " +
-//                    "overflow-x: hidden; word-wrap: break-word; white-space: normal;" +
-//                    "border: thin solid black;  border-bottom: thin solid lightgray;}";  // 
-//                
-//                craigslist.fusion.Utilities.createStyle(this.browserWin.document, ".detailAreaClass ", detailAreaClass);
+                //                var detailAreaClass = "{ width: 100%; height: 300px; overflow-y: scroll; " +
+                //                    "overflow-x: hidden; word-wrap: break-word; white-space: normal;" +
+                //                    "border: thin solid black;  border-bottom: thin solid lightgray;}";  // 
+                //                var detailAreaClass = "{ width: 100%; height: 300px; overflow-y: scroll; " +
+                //                    "overflow-x: hidden; word-wrap: break-word; white-space: normal;" +
+                //                    "border: thin solid black;  border-bottom: thin solid lightgray;}";  // 
+                //                
+                //                craigslist.fusion.Utilities.createStyle(this.browserWin.document, ".detailAreaClass ", detailAreaClass);
                 
+                var entryGradientEndColor = this.preferences.getEntryGradientColor().getValue();	//#D8D8D8
                 var entryClass = "{";
                 entryClass += "background: #FFFFFF;\n";
-                entryClass += "filter: progid:DXImageTransform.Microsoft.gradient(startColorstr='#FFFFFF', endColorstr='#D8D8D8');\n";
+                entryClass += "filter: progid:DXImageTransform.Microsoft.gradient(startColorstr='#FFFFFF', endColorstr='" + entryGradientEndColor + "');\n";
                 entryClass += "background: -webkit-gradient(linear, left top, left bottom, from(#FFFFFF), to(#D8D8D8));\n";
-                entryClass += "background: -moz-linear-gradient(top,  #FFFFFF,  #D8D8D8); \n";
+                entryClass += "background: -moz-linear-gradient(top,  #FFFFFF,  " + entryGradientEndColor + "); \n";
                 entryClass += "margin-top: 10px; \n";
                 entryClass += "border-bottom: solid thin DarkGray; \n";
                 //entryClass += "border-left: solid thin black; \n";
                 //entryClass += "border-right: solid thin black; \n";
-                entryClass += "width: 100% !important; margin-left: 5px !important;  margin-right: 0px !important; padding: 0px !important;\n";
+                entryClass += "width: 100% !important; margin-left: 0px !important;  margin-right: 0px !important; padding: 0px !important;\n";
                 entryClass += "}";
                 craigslist.fusion.Utilities.createStyle(this.browserWin.document, ".entryClass", entryClass);
                 
                 var blockquoteClass = "{ width: 100% !important; margin: 0px !important; padding: 0px !important; }"; // border: solid thin red;
                 craigslist.fusion.Utilities.createStyle(this.browserWin.document, ".blockquoteClass", blockquoteClass);
+                
+                var filteredArea = "{ width: 100% !important; margin: 0px !important; padding: 0px !important; }";
+                craigslist.fusion.Utilities.createStyle(this.browserWin.document, ".filteredArea", filteredArea);
+                
+                var favoriteArea = "{ width: 100% !important; margin: 0px !important; padding: 0px !important; }";
+                craigslist.fusion.Utilities.createStyle(this.browserWin.document, ".favoriteArea", favoriteArea);
                 
                 //Note: this interferes with grid view
                 //var pClass = "{ width: 100% !important; margin-left: 0px !important;  margin-right: 0px !important; padding: 0px !important; }";    // border: solid thin blue;
@@ -860,7 +959,7 @@ release the author(s) of any liability related to their usage of this software.
                 this.searchWindow = new craigslist.fusion.MiniWin(this.AUTOSEARCH_WINDOW ,
                     500, 400, "SearchWindow", null, this.browserWin.document, this.browserWin, this.winManager);
 
-    //            this.searchWindow.addSizeChangeListener(new craigslist.fusion.WindowSizeChangeListener(this.AUTOSEARCH_WINDOW, browserWin));
+                //            this.searchWindow.addSizeChangeListener(new craigslist.fusion.WindowSizeChangeListener(this.AUTOSEARCH_WINDOW, browserWin));
                 this.searchWindow.addLayoutChangeListener(new craigslist.fusion.WindowLayoutListener(this.AUTOSEARCH_WINDOW, browserWin));
                 this.searchWindow.addClosingListener(new craigslist.fusion.WindowClosingListener(this.AUTOSEARCH_WINDOW, null));
                 //this.previewWindow.addVisibleListener(new WindowVisibleChangeListener(this, "onWindowVisibleChange"));
@@ -883,7 +982,7 @@ release the author(s) of any liability related to their usage of this software.
                 this.layout.doLayout();
 
                 if (!this.hasLayoutPreferences()) {
-                    this.layoutWindows(null, 0.6, null);
+                    this.layoutWindows(null, 0.5, null);
                 }
                 
                 if (this.postInitialize) {
@@ -895,13 +994,87 @@ release the author(s) of any liability related to their usage of this software.
             }
         }
         
+        this.showBookmarks = function(browserWin, container) {
+            try {
+                if (this.bookmarkList.length == 0) {
+                    return;
+                }
+                
+                if (typeof container == "undefined" || container == null) {
+                    var leftBar = browserWin.document.getElementById("leftbar");
+                    if (!leftBar) {
+                        return;
+                    }
+
+                    var postlks = browserWin.document.getElementById("postlks");
+                    if (!postlks) {
+                        return;
+                    }
+                    container = postlks;
+                }
+                
+                var bm;
+                var bmDiv;
+                var link;
+                
+                var bookmarkDiv = craigslist.fusion.Utilities.addNewAfter("div", container);
+                for (var i = 0; i < 4 && i < this.bookmarkList.length; i++) {
+                    bm = this.bookmarkList[i];
+                    bmDiv = craigslist.fusion.Utilities.addNew("div", bookmarkDiv);
+                    //add link
+                    link = craigslist.fusion.Utilities.addNew("a", bmDiv);
+                    craigslist.fusion.Utilities.newText(bm.subject, link);
+                    link.href = "javascript:void()";
+                    link.addEventListener("click", craigslist.fusion.Utilities.runWith(this, function(evt, url, param2) {
+                        if (evt) {
+                            evt.preventDefault();
+                            evt.stopPropagation();
+                        }
+                        
+                        browserWin.location.href = url;
+                    }, bm.url, ""), false);
+                //add remove button (not for the auto item)
+                }
+                
+                if (this.bookmarkList.length > 4) {
+                    //create a "Select"
+                    var select = craigslist.fusion.Utilities.addNew("select", bookmarkDiv);
+                    for (i = 4; i < this.bookmarkList.length; i++) {
+                        bm = this.bookmarkList[i];
+                        var option = new Option(bm.subject, bm.url, false, false);
+                        select.options.add(option); 
+                        //add link
+                        /*
+                        link = craigslist.fusion.Utilities.addNew("a", bmDiv);
+                        craigslist.fusion.Utilities.newText(bm.subject, link);
+                        link.href = "javascript:void()";
+                        */
+                        //todo, change to select change or select click
+                        option.addEventListener("click", craigslist.fusion.Utilities.runWith(this, function(evt, url, param2) {
+                            if (evt) {
+                                evt.preventDefault();
+                                evt.stopPropagation();
+                            }
+
+                            browserWin.location.href = url;
+                        }, bm.url, ""), false);
+                    //add remove button (not for the auto item)
+                        
+                    }
+                }
+                
+            } catch (error) {
+                alert("Failed to load bookmarks in the home page. " + error);
+            }
+        }
+        
         this.initStyles = function() {
             
         }
 
         this.hasLayoutPreferences = function() {
-            var value = craigslist.fusion.Utilities.pref_getValue("craigslist.fusion.CheckLayoutPreferencesV2", null);
-            craigslist.fusion.Utilities.pref_setValue("craigslist.fusion.CheckLayoutPreferencesV2", "fusion_preferences");
+            var value = craigslist.fusion.Utilities.pref_getValue("craigslist.fusion.CheckLayoutPreferencesV3", null);
+            craigslist.fusion.Utilities.pref_setValue("craigslist.fusion.CheckLayoutPreferencesV3", "fusion_preferences");
             if (value == null) {
                 return false;
             }
@@ -919,12 +1092,12 @@ release the author(s) of any liability related to their usage of this software.
                 this.browserWin.addEventListener("mousemove", this.activeUserListener, false);
 
                 this.setUpRefresh();
-             } catch (err) {
+            } catch (err) {
                 craigslist.fusion.Utilities.notify("Failed to setup refresh page : " , err);
-             }
-         }
+            }
+        }
 
-         this.setUpRefresh = function(evt, param1, param2) {
+        this.setUpRefresh = function(evt, param1, param2) {
             var enableAutoRefresh = this.preferences.getEnableAutoRefresh().getValue();
             var refreshInterval;
             try {
@@ -1048,14 +1221,14 @@ release the author(s) of any liability related to their usage of this software.
         this.importFavList = function(serializedData) {
             try {
                 if (!craigslist.fusion.Utilities.isEmpty(serializedData, true)) {
-                        var serializer = new craigslist.fusion.Serializer();
-                        var data = serializer.decode(serializedData);
-                        for (var i = 0; i < data.length; i++) {
-                            this.favMap.put(data[i].postId, ".");
-                            this.favList[this.favList.length] = data[i];
-                        }
-                        this.saveFavList();
-                        return true;
+                    var serializer = new craigslist.fusion.Serializer();
+                    var data = serializer.decode(serializedData);
+                    for (var i = 0; i < data.length; i++) {
+                        this.favMap.put(data[i].postId, ".");
+                        this.favList[this.favList.length] = data[i];
+                    }
+                    this.saveFavList();
+                    return true;
                 }
             } catch (err) {
                 craigslist.fusion.Utilities.notify("Failed to import data.  Invalid data found.");
@@ -1072,6 +1245,48 @@ release the author(s) of any liability related to their usage of this software.
                 craigslist.fusion.Utilities.notify(err);
             }
             return null;
+        }
+        
+        this.exportBookmarkList = function() {
+            try {
+                var serializer = new craigslist.fusion.Serializer();
+                var bm_ser = serializer.encode(this.bookmarkList);
+                return bm_ser;
+            } catch (err) {
+                craigslist.fusion.Utilities.notify(err);
+            }
+            return null;
+        }
+        
+        this.saveBookmarkList = function() {
+            try {
+                var bm_ser = this.exportBookmarkList();
+                if (bm_ser != null) {
+                    craigslist.fusion.Utilities.pref_setValue(this.BOOKMARK_LIST, bm_ser);
+                }
+            } catch (err) {
+                craigslist.fusion.Utilities.notify(err);
+            }
+        }
+
+        this.loadBookmarkList = function() {
+            try {
+                var bm_ser = craigslist.fusion.Utilities.pref_getValue(this.BOOKMARK_LIST, null);
+                if (bm_ser != null) {
+                    var serializer = new craigslist.fusion.Serializer();
+                    var data = serializer.decode(bm_ser);
+                    if (data != null) {
+                        this.bookmarkList = data;
+                        for (var i = 0; i < this.bookmarkList.length; i++) {
+                            this.bookmarkMap.put(this.bookmarkList[i].url, ".");
+                        }
+                    } else {
+                    }
+                } else {
+                }
+            } catch (err) {
+                craigslist.fusion.Utilities.notify("Failed to load bookmark list: ", err);
+            }
         }
         
         this.saveFavList = function() {
@@ -1190,6 +1405,9 @@ release the author(s) of any liability related to their usage of this software.
             var i;
             
             this.theForm = craigslist.fusion.Utilities.findFirstItem("form", null, this.browserWin.document);
+
+            var topPage = craigslist.fusion.Utilities.addNew("a", this.getListingArea());
+            topPage.id = "toppage";
             
             this.controlArea = craigslist.fusion.Utilities.addNew("div", this.getListingArea());
             
@@ -1199,20 +1417,24 @@ release the author(s) of any liability related to their usage of this software.
                 craigslist.fusion.Utilities.addClass(this.controlArea, "embeddedControlAreaClass");
             }
             
-            var controlTitle = craigslist.fusion.Utilities.addNew("div", this.controlArea);
+            this.controlTitle = craigslist.fusion.Utilities.addNew("div", this.controlArea);
 
-            controlTitle.setAttribute("style", "width: 100%; height: 20px; background-color:rgba(200, 200, 200,0.5); ");
+            this.controlTitle.setAttribute("style", "width: 100%; height: 20px; background-color:rgba(200, 200, 200,0.5); ");
             
-            var titleDiv = craigslist.fusion.Utilities.addNew("div", controlTitle);
+            var titleDiv = craigslist.fusion.Utilities.addNew("div", this.controlTitle);
             titleDiv.setAttribute("style", "width: 250px; background-color: #AADDDD; float: right;");
             
             craigslist.fusion.Utilities.newText("Toolbar and Search Form", titleDiv);
 
             var commandDiv = craigslist.fusion.Utilities.addNew("div", this.controlArea);
             
-            controlTitle.addEventListener("click", craigslist.fusion.Utilities.runWith(this, function(evt, commandDiv, p2) {
+            this.controlTitle.addEventListener("click", craigslist.fusion.Utilities.runWith(this, function(evt, commandDiv, p2) {
+                evt.preventDefault();
+                evt.stopPropagation();
                 craigslist.fusion.Utilities.removeClass(commandDiv, "collapsedSearchPanel");
                 craigslist.fusion.Utilities.addClass(commandDiv, "expandedSearchPanel");
+                craigslist.fusion.Utilities.addClass(this.controlTitle, "collapsedSearchPanel");
+                craigslist.fusion.Utilities.removeClass(this.controlTitle, "expandedSearchPanel");
             }, commandDiv), true);
 
             //
@@ -1223,13 +1445,15 @@ release the author(s) of any liability related to their usage of this software.
             commandDiv.style.border = "solid";
             commandDiv.style.borderWidth = "0px";
             commandDiv.style.borderColor = "black";
-            commandDiv.style.backgroundColor = "#CCCCCC";
+            commandDiv.style.backgroundColor = "#DFDFDF";
             
             var table = craigslist.fusion.Utilities.addNew("table", commandDiv);
 
+            var cmdStyle = "background-color: #D0D0D0 !important;";
             var tr = craigslist.fusion.Utilities.addNew("tr", table);
             var td = craigslist.fusion.Utilities.addNew("td", tr);
             var pref = craigslist.fusion.Utilities.addNew("a", td);
+            pref.setAttribute("style", cmdStyle);
             pref.href = "javascript:void(0)";
             craigslist.fusion.Utilities.newText("Preferences", pref);
             pref.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.showPreference, this.browserWin, ""), false);
@@ -1237,55 +1461,88 @@ release the author(s) of any liability related to their usage of this software.
             
             td = craigslist.fusion.Utilities.addNew("td", tr);
             var fav = craigslist.fusion.Utilities.addNew("a", td);
+            fav.setAttribute("style", cmdStyle);
             fav.href = "javascript:void(0)";
-            craigslist.fusion.Utilities.newText("Favorites", fav);
+            craigslist.fusion.Utilities.newText("Favs", fav);
             fav.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.showFavorites, this.browserWin, ""), false);
             td.style.width = "100px";
-
+            
+            craigslist.fusion.Utilities.newText("  ", td);
+            var searchLink = craigslist.fusion.Utilities.addNew("a", td);
+            searchLink.setAttribute("style", cmdStyle);
+            searchLink.href = "javascript:void(0)";
+            craigslist.fusion.Utilities.newText("Filters", searchLink);
+            searchLink.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.showFilterAndSearchWindow, 1.0, ""), false);
+            
             td = craigslist.fusion.Utilities.addNew("td", tr);
             var sticky = craigslist.fusion.Utilities.addNew("a", td);
+            sticky.setAttribute("style", cmdStyle);
             sticky.href = "javascript:void(0)";
             craigslist.fusion.Utilities.newText("Sticky Mode", sticky);
             sticky.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.setStickyMode, this.browserWin, ""), false);
             td.style.width = "100px";
-
+            
+            tr = craigslist.fusion.Utilities.addNew("tr", table);
             td = craigslist.fusion.Utilities.addNew("td", tr);
-            craigslist.fusion.Utilities.newText("Fit Screen  ", td);
+            craigslist.fusion.Utilities.newText("Fit  ", td);
             var resizer = craigslist.fusion.Utilities.addNew("a", td);
             resizer.href = "javascript:void(0)";
             craigslist.fusion.Utilities.newText("50%", resizer);
+            resizer.setAttribute("style", "font-weight: bold; " + cmdStyle);
             resizer.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.layoutWindows, 0.5, ""), false);
 
             craigslist.fusion.Utilities.newText("  ", td);
             resizer = craigslist.fusion.Utilities.addNew("a", td);
+            resizer.setAttribute("style", cmdStyle);
             resizer.href = "javascript:void(0)";
             craigslist.fusion.Utilities.newText("60%", resizer);
-            resizer.setAttribute("style", "font-weight: bold");
             resizer.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.layoutWindows, 0.6, ""), false);
 
             craigslist.fusion.Utilities.newText("  ", td);
             resizer = craigslist.fusion.Utilities.addNew("a", td);
+            resizer.setAttribute("style", cmdStyle);
             resizer.href = "javascript:void(0)";
             craigslist.fusion.Utilities.newText("70%", resizer);
             resizer.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.layoutWindows, 0.7, ""), false);
 
             craigslist.fusion.Utilities.newText("  ", td);
             resizer = craigslist.fusion.Utilities.addNew("a", td);
+            resizer.setAttribute("style", cmdStyle);
             resizer.href = "javascript:void(0)";
             craigslist.fusion.Utilities.newText("100%", resizer);
             resizer.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.layoutWindows, 1.0, ""), false);
 
-            craigslist.fusion.Utilities.newText("  ", td);
-            var searchLink = craigslist.fusion.Utilities.addNew("a", td);
-            searchLink.href = "javascript:void(0)";
-            craigslist.fusion.Utilities.newText("Filters and Emails", searchLink);
-            searchLink.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.showFilterAndSearchWindow, 1.0, ""), false);
+            td = craigslist.fusion.Utilities.addNew("td", tr);
+            var bookmark = craigslist.fusion.Utilities.addNew("a", td);
+            bookmark.setAttribute("style", cmdStyle);
+            bookmark.href = "javascript:void(0)";
+            craigslist.fusion.Utilities.newText("+Page", bookmark);
+            bookmark.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.addBookmark, false, ""), false);
 
             craigslist.fusion.Utilities.newText("  ", td);
-            var showMapWindow = craigslist.fusion.Utilities.addNew("a", td);
-            showMapWindow.href = "javascript:void(0)";
-            craigslist.fusion.Utilities.newText("Map", showMapWindow);
-            showMapWindow.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.showMapWindow, 1.0, ""), false);
+            var showBookmarks = craigslist.fusion.Utilities.addNew("a", td);
+            showBookmarks.setAttribute("style", cmdStyle);
+            showBookmarks.href = "javascript:void(0)";
+            craigslist.fusion.Utilities.newText("Links", showBookmarks);
+            showBookmarks.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.showBookmarkWindow, 
+                null, ""), false);
+            
+            td = craigslist.fusion.Utilities.addNew("td", tr);
+            craigslist.fusion.Utilities.newText("  ", td);
+            //            var showMapWindow = craigslist.fusion.Utilities.addNew("a", td);
+            //            showMapWindow.setAttribute("style", cmdStyle);
+            //            showMapWindow.href = "javascript:void(0)";
+            //            craigslist.fusion.Utilities.newText("Map", showMapWindow);
+            //            showMapWindow.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.showMapWindow, 1.0, ""), false);
+            //
+            //            craigslist.fusion.Utilities.newText("    ", td);
+            var goTop = craigslist.fusion.Utilities.addNew("a", td);
+            goTop.setAttribute("style", cmdStyle);
+            goTop.href = "#toppage";
+            craigslist.fusion.Utilities.newText("Go Top", goTop);
+            
+            //showMapWindow.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.showMapWindow, 1.0, ""), false);
+
 
             td.style.width = "100px";
 
@@ -1314,6 +1571,8 @@ release the author(s) of any liability related to their usage of this software.
                     craigslist.fusion.Utilities.runWith(this, function(evt, p1, p2) {
                         craigslist.fusion.Utilities.removeClass(commandDiv, "collapsedSearchPanel");
                         craigslist.fusion.Utilities.addClass(commandDiv, "expandedSearchPanel");
+                        craigslist.fusion.Utilities.addClass(this.controlTitle, "collapsedSearchPanel");
+                        craigslist.fusion.Utilities.removeClass(this.controlTitle, "expandedSearchPanel");
                     }),
                     craigslist.fusion.Utilities.runWith(this, function(evt, p1, p2) {
                         if (this.theForm) {
@@ -1333,8 +1592,10 @@ release the author(s) of any liability related to their usage of this software.
 
                         craigslist.fusion.Utilities.removeClass(commandDiv, "expandedSearchPanel");
                         craigslist.fusion.Utilities.addClass(commandDiv, "collapsedSearchPanel");
+                        craigslist.fusion.Utilities.removeClass(this.controlTitle, "collapsedSearchPanel");
+                        craigslist.fusion.Utilities.addClass(this.controlTitle, "expandedSearchPanel");
                     })
-                );
+                    );
             }
             
             var entryDiv = craigslist.fusion.Utilities.addNew("div", this.getListingArea());
@@ -1388,8 +1649,9 @@ release the author(s) of any liability related to their usage of this software.
                     }
                     var submit = craigslist.fusion.Utilities.findNode(this.theForm, "input", {
                         type: "submit",
-                        value: "Search"
+                        value: "search"
                     });
+
                     if (submit) {
                         var searchFormTbl = this.browserWin.document.getElementById("searchtable");
                         
@@ -1427,7 +1689,7 @@ release the author(s) of any liability related to their usage of this software.
                             tdOptions = craigslist.fusion.Utilities.addNew("td", trOptions);
                             var label;
                             var searchType = craigslist.fusion.Utilities.findNode(this.theForm, "input", {
-                                type: "radio",
+                                type: "checkbox",
                                 name: "srchType",
                                 value: "T"
                             });
@@ -1503,9 +1765,21 @@ release the author(s) of any liability related to their usage of this software.
                                 craigslist.fusion.Utilities.newText("Bed rooms:", formTd1);
                                 formTd2.appendChild(bedrooms);
                             }
+                            
+                            var housingType = craigslist.fusion.Utilities.findNode(this.theForm, "select", {
+                                name: "housing_type"
+                            });
+                            if (housingType) {
+                                formTr = craigslist.fusion.Utilities.addNew("tr", searchFormTbl);
+                                formTd1 = craigslist.fusion.Utilities.addNew("td", formTr);
+                                formTd2 = craigslist.fusion.Utilities.addNew("td", formTr);
+                                craigslist.fusion.Utilities.newText("Housing type:", formTd1);
+                                formTd2.appendChild(housingType);
+                            }
 
                             var neighborhood = craigslist.fusion.Utilities.findNode(this.theForm, "select", {
-                                name: "nh", id: "nh"
+                                name: "nh", 
+                                id: "nh"
                             });
                             var neighborhoodBtn = craigslist.fusion.Utilities.findNode(this.theForm, "button", {
                                 id: "hoodtitle"
@@ -1519,7 +1793,7 @@ release the author(s) of any liability related to their usage of this software.
                                 //formTd1.appendChild(neighborhoodBtn);
                                 //neighborhoodBtn.onclick = function(e) { //function(e){e.preventDefault();toggleHoods();}
                                 //    e.preventDefault();
-                                    //avoid calling CL's func
+                                //avoid calling CL's func
                                 //}
                                 //formTd2.appendChild(neighborhood);
 
@@ -1574,7 +1848,9 @@ release the author(s) of any liability related to their usage of this software.
                             tdCommandBtns.setAttribute("colSpan", "2");
                             tdCommandBtns.setAttribute("style", "word-wrap: normal !important; white-space: normal !important; ");
                             
-                            var btnTabGroup = craigslist.fusion.Utilities.findNode(this.browserWin.document, "blockquote", {"class": "modebtns"});
+                            var btnTabGroup = craigslist.fusion.Utilities.findNode(this.browserWin.document, "blockquote", {
+                                "class": "modebtns"
+                            });
                             if (btnTabGroup) {
                                 if (this.nodes) {
                                     for (i = this.nodes.length - 1; i >= 0; i--) {
@@ -1593,16 +1869,20 @@ release the author(s) of any liability related to their usage of this software.
                             showHidden.addEventListener("click", 
                                 craigslist.fusion.Utilities.runWith(this, this.showHiddenEntries, 0.5, ""), false);
                             
-                            var searchgroup = craigslist.fusion.Utilities.findNode(searchFormTbl, "span", {"class": "searchgroup"});
-                            while (searchgroup) {
-                                craigslist.fusion.Utilities.removeNode(searchgroup);
-                                searchgroup = craigslist.fusion.Utilities.findNode(searchFormTbl, "span", {"class": "searchgroup"});
+                            var searchgroups = craigslist.fusion.Utilities.findNodes(searchFormTbl, "span", {
+                                "class": "searchgroup"
+                            });
+                            for (i = 0; i < searchgroups.length; i++) {
+                                //craigslist.fusion.Utilities.removeNode(searchgroup);
+                                searchgroups[i].style.display = "none";
                             }    
                         }                     
                             
                     }
                     
-                    var divBcHead = craigslist.fusion.Utilities.findNode(this.browserWin.document, "DIV", {"class": "bchead"});
+                    var divBcHead = craigslist.fusion.Utilities.findNode(this.browserWin.document, "DIV", {
+                        "class": "bchead"
+                    });
                     //var bcHeadContent = craigslist.fusion.Utilities.findNode(divBcHead, "BLOCKQUOTE", {});
                     if (divBcHead) {
                         divBcHead.setAttribute("style", "width: 98% !important;");
@@ -1643,7 +1923,6 @@ release the author(s) of any liability related to their usage of this software.
                     
                 }
             } catch (error) {
-                //alert("error: " + error);
                 craigslist.fusion.Utilities.notify("Error (1) in setting up listing window: " + sess, error);
             }
             /*
@@ -1768,7 +2047,7 @@ release the author(s) of any liability related to their usage of this software.
             var input = addNew("input", td);
             input.setAttribute("type", "text");
             input.setAttribute("value", "");
-    //        input.setAttribute("size", "40");
+            //        input.setAttribute("size", "40");
             input.setAttribute("style", "width: 300px;");
             input.id = "searchNameId";
 
@@ -1841,7 +2120,7 @@ release the author(s) of any liability related to their usage of this software.
             //input.setAttribute("type", "checkbox");
             input.setAttribute("rows", "5");
             input.setAttribute("cols", "60");
-    //        input.setAttribute("style", "width: 300px;");
+            //        input.setAttribute("style", "width: 300px;");
             input.id = "emailSearchContentId";
 
             tr = addNew("tr", table);
@@ -1921,10 +2200,10 @@ release the author(s) of any liability related to their usage of this software.
             return orComponent;
         }
 
-    //    this.addAndFilter = function(evt, orComp, params) {
-    //        var andComp = new craigslist.fusion.ui.AndComponent(null, "", true);
-    //        orComp.addAndComponent(andComp);
-    //    }
+        //    this.addAndFilter = function(evt, orComp, params) {
+        //        var andComp = new craigslist.fusion.ui.AndComponent(null, "", true);
+        //        orComp.addAndComponent(andComp);
+        //    }
 
         this.getUniqueId = function(prefix) {
             for (var iter = 0; iter < 100; iter++) {
@@ -1977,7 +2256,7 @@ release the author(s) of any liability related to their usage of this software.
                 
                 craigslist.fusion.Utilities.$("hidePostEnabledId", this.browserWin.document).checked = (("true" == search.hidePost)? true: false);
                 
-    //            var element;
+                //            var element;
                 craigslist.fusion.Utilities.removeAllChildren(filterTd);
 
                 this.searchOrList = new Array();    //clear out the component list
@@ -2206,7 +2485,7 @@ release the author(s) of any liability related to their usage of this software.
                 visible = this.infoWindow.isVisible();
                 this.infoWindow.setVisible(true);
                 if (percent == 1) {
-                        this.infoWindow.setBounds(0, width - 600 - 40, 600, top);
+                    this.infoWindow.setBounds(0, width - 600 - 40, 600, top);
                 } else {
                     if (overlapped) {
                         if (leftRight) {
@@ -2313,73 +2592,100 @@ release the author(s) of any liability related to their usage of this software.
            
             var me = this;
             craigslist.fusion.Utilities.runOnce(function() { //call after the node is created
-                var ele =  me.browserWin.document.getElementById("popstuffs");
+                //var ele =  me.browserWin.document.getElementById("popstuffs");
+                var map = me.browserWin.document.getElementById("map");
+                if (!map) {
+                    return;
+                }
+                var ele = craigslist.fusion.Utilities.findNode(map, "div", {
+                    "class": "leaflet-popup-content-wrapper"
+                });
+                
                 if (!ele) {
                     return;
                 }
                 //var idTag = ele.getAttribute("idTag");
                 me.handleMapPopUp(ele, evt);
-            }, 10);
+            }, 30);
         }
         
         this.mapIcons = [];
         
         this.handleMapPopUp = function(container, evt) {
             //craigslist.fusion.Utilities.runOnce(craigslist.fusion.Utilities.runWith(this, function(event, container) {
+            var map = this.browserWin.document.getElementById("map");
+            if (!map) {
+                return;
+            }
                 
-                var span = craigslist.fusion.Utilities.findNode(container, "span", {"class": "postingtitle"});
+            container = craigslist.fusion.Utilities.findNode(map, "div", {
+                "class": "leaflet-popup-content-wrapper"
+            });
                 
-                if (!span) {
-                    return;
+            //var span = craigslist.fusion.Utilities.findNode(container, "span", {"class": "postingtitle"});
+            var spans = craigslist.fusion.Utilities.findNodes(container, "span", {
+                "class": "postingtitle"
+            });
+            if (!spans || spans.length == 0) {
+                return;
+            }
+            var link = null;
+            var postId = null;
+            for (var i = 0; i < spans.length; i++) {
+                link = craigslist.fusion.Utilities.findNode(spans[i], "a");   //target: _blank
+                if (link) {
+                    postId = this.getPostId(link);
+                    if (postId && postId != null) {
+                        break;
+                    }
+                //link = craigslist.fusion.Utilities.findNode(container, "a"); 
                 }
+            }
                 
-                var link = craigslist.fusion.Utilities.findNode(span, "a");   //target: _blank
+            if (postId == null) {
+                return;
+            }
                 
-                if (!link) {
-                    return;
-                }
+            //add code to handle the link:
                 
-                //add code to handle the link:
-                
-                //container.setAttribute("style", "width: 450px !important; ");
-                //container.style.width = "450px";
-                //container.style.height = "250px";
+            //container.setAttribute("style", "width: 450px !important; ");
+            //container.style.width = "450px";
+            //container.style.height = "250px";
                 
                 
-                var postId = this.getPostId(link);
+            if (this.hideMap.contains(postId) || this.spamMap.contains(postId)) {
+            //craigslist.fusion.Utilities.removeNode(container.parentNode);
+            //craigslist.fusion.Utilities.removeNode(evt.target.parentNode);
+            //return;
+            }       
                 
-                if (this.hideMap.contains(postId) || this.spamMap.contains(postId)) {
-                    //craigslist.fusion.Utilities.removeNode(container.parentNode);
-                    //craigslist.fusion.Utilities.removeNode(evt.target.parentNode);
-                    //return;
-                }       
+            craigslist.fusion.Utilities.removeAllChildren(container);
+            var newTagId = craigslist.fusion.Utilities.rand(6);
+            container.setAttribute("idTag", newTagId);
+            this.lastMapMouseX = evt.pageX;
+            this.lastMapMouseY = evt.pageY;
+            this.lastMapTag = newTagId;
                 
-                craigslist.fusion.Utilities.removeAllChildren(container);
-                var newTagId = craigslist.fusion.Utilities.rand(6);
-                container.setAttribute("idTag", newTagId);
-                this.lastMapMouseX = evt.pageX;
-                this.lastMapMouseY = evt.pageY;
-                this.lastMapTag = newTagId;
                 
-                container.appendChild(link);
+            container.appendChild(link);
                 
-                try {
-                    this.preProcessDetails(link, [container, "main", postId]);
-                    var req = craigslist.fusion.AjaxRequestFactory.getRequest({
-                        method: "GET",
-                        url: link.href,
-                        headers: {
-                            "Accept" : "text/html,text/xml,text/plain"
-                        },
-                        contentHandler: craigslist.fusion.Utilities.runWith(this, this.processDetails, link, [container, "main", postId]),
-                        data : null
-                    });
+            try {
+                this.preProcessDetails(link, [container, "main", postId]);
+                var req = craigslist.fusion.AjaxRequestFactory.getRequest({
+                    method: "GET",
+                    url: link.href,
+                    headers: {
+                        "Accept" : "text/html,text/xml,text/plain"
+                    },
+                    contentHandler: craigslist.fusion.Utilities.runWith(this, this.processDetails, link, [container, "main", postId]),
+                    data : null
+                });
 
-                    req.send();
-                } catch (imgErr) {
-                    craigslist.fusion.Utilities.notify("error (2): " + imgErr + ", " + sess);
-                }
-            //}, container, null), 10);
+                req.send();
+            } catch (imgErr) {
+                craigslist.fusion.Utilities.notify("error (2): " + imgErr + ", " + sess);
+            }
+        //}, container, null), 10);
         }
         
         this.locateMapNode = function(target, nodeHolder) {
@@ -2393,7 +2699,7 @@ release the author(s) of any liability related to their usage of this software.
                 (target.getAttribute("class") == divClass ||
                     target.getAttribute("class") == div2Class)) {
                 icon = target;
-                //console.log(target);
+            //console.log(target);
             } else if (target.nodeName == "IMG" &&
                 (target.getAttribute("class") == imgClass)) {
                 if (nodeHolder == false) {
@@ -2462,19 +2768,19 @@ release the author(s) of any liability related to their usage of this software.
                     //check last position:
                     if (atag && this.lastMapMouseX && this.lastMapMouseY && this.lastMapTag) {
                         //if (this.lastMapTag == atag) {
-                            //check the distance
-                            var x = evt.pageX;
-                            var y = evt.pageY;
+                        //check the distance
+                        var x = evt.pageX;
+                        var y = evt.pageY;
                             
-                            var squareDist = (Math.pow(x - this.lastMapMouseX, 2) + Math.pow(y - this.lastMapMouseY, 2));
-                            if (squareDist <= 4 * 4) {
-                                return;
-                            }
+                        var squareDist = (Math.pow(x - this.lastMapMouseX, 2) + Math.pow(y - this.lastMapMouseY, 2));
+                        if (squareDist <= 4 * 4) {
+                            return;
+                        }
                             
-                        //}
+                    //}
                     }
                     
-                    /*
+                /*
                     if (typeof atag != "undefined" && atag != null) {
                         var nodeHolder = this.locateMapNode(evt.target, true);
                         if (nodeHolder == null) {
@@ -2546,8 +2852,8 @@ release the author(s) of any liability related to their usage of this software.
                 var me = this;
                 if (listViewBtn) listViewBtn.addEventListener("click", function() {
                     //if (flipCatAndSubmit) {
-                        //flipCatAndSubmit(""); //NOTE - DONOT call page's script, elevated privilege
-                        //me.modifyListing();
+                    //flipCatAndSubmit(""); //NOTE - DONOT call page's script, elevated privilege
+                    //me.modifyListing();
                     //}
                     //refresh page
                     if (me.theForm) {
@@ -2558,8 +2864,8 @@ release the author(s) of any liability related to their usage of this software.
                 }, true);
                 if (picViewBtn) picViewBtn.addEventListener("click", function() {
                     //if (flipCatAndSubmit) {
-                        //flipCatAndSubmit(""); //NOTE - DONOT call page's script, elevated privilege
-                        //me.modifyListing();
+                    //flipCatAndSubmit(""); //NOTE - DONOT call page's script, elevated privilege
+                    //me.modifyListing();
                     //}
                     if (me.theForm) {
                         craigslist.fusion.Utilities.runOnce(function() {
@@ -2569,8 +2875,8 @@ release the author(s) of any liability related to their usage of this software.
                 }, true);
                 if (gridViewBtn) gridViewBtn.addEventListener("click", function() {
                     //if (flipCatAndSubmit) {
-                        //flipCatAndSubmit(""); //NOTE - DONOT call page's script, elevated privilege
-                        //me.modifyListing();
+                    //flipCatAndSubmit(""); //NOTE - DONOT call page's script, elevated privilege
+                    //me.modifyListing();
                     //}
                     if (me.theForm) {
                         craigslist.fusion.Utilities.runOnce(function() {
@@ -2580,15 +2886,15 @@ release the author(s) of any liability related to their usage of this software.
                 }, true);
                 
                 //if (mapViewBtn) mapViewBtn.addEventListener("click", function() {
-                    //if (flipCatAndSubmit) {
-                        //flipCatAndSubmit(""); //NOTE - DONOT call page's script, elevated privilege
-                        //me.modifyListing();
-                    //}
-                   // if (me.theForm) {
-//                        craigslist.fusion.Utilities.runOnce(function() {
-//                            me.theForm.submit();
-//                        }, 20);
-                    //}
+                //if (flipCatAndSubmit) {
+                //flipCatAndSubmit(""); //NOTE - DONOT call page's script, elevated privilege
+                //me.modifyListing();
+                //}
+                // if (me.theForm) {
+                //                        craigslist.fusion.Utilities.runOnce(function() {
+                //                            me.theForm.submit();
+                //                        }, 20);
+                //}
                 //}, true);
                 
                 //determine the listing type:
@@ -2633,16 +2939,16 @@ release the author(s) of any liability related to their usage of this software.
                     
                     var map = this.browserWin.document.getElementById("map");
                     if (map != null) {
-                        //map.addEventListener("mouseover", craigslist.fusion.Utilities.runWith(this, this.handleMouseOver, null, null), true);
+                    //map.addEventListener("mouseover", craigslist.fusion.Utilities.runWith(this, this.handleMouseOver, null, null), true);
                     }
                     return;
                 } else if (queryMap.get("altView") == "imggrid" || cookieMap.get("cl_img") == "grid") {
-                   this.showImages = false;
-                   this.showPreviewText = false;
-                   this.changeEntryClass = false;
-                   this.removeBreak = true;
+                    this.showImages = false;
+                    this.showPreviewText = false;
+                    this.changeEntryClass = false;
+                    this.removeBreak = true;
                    
-                   this.doShowGridViewImageIcons = true;
+                    this.doShowGridViewImageIcons = true;
                 } else {    //normal listing
                     
                 }
@@ -2653,7 +2959,7 @@ release the author(s) of any liability related to their usage of this software.
                 //schedule a dynamic rendering job:
                 
                 craigslist.fusion.Utilities.runOnce(craigslist.fusion.Utilities.runWith(this, this.dynamicProcessListing, glinks, [waitTime]), waitTime);
-                /*
+            /*
                 var lowIndex = 0;
                 var highIndex = 0;
                 var incre = glinks.length;  //just do it all at once for now
@@ -2738,7 +3044,7 @@ release the author(s) of any liability related to their usage of this software.
                 this.processing = processing;
                 this.modifySubList(null, this.infoList, [lowIndex, highIndex, processing]);
             }
-            //craigslist.fusion.Utilities.runOnce(craigslist.fusion.Utilities.runWith(this, this.dynamicProcessListing, linkList, [job, processedList, waitTime]), waitTime);
+        //craigslist.fusion.Utilities.runOnce(craigslist.fusion.Utilities.runWith(this, this.dynamicProcessListing, linkList, [job, processedList, waitTime]), waitTime);
         }
         
         this.scrollEventHandler = function(evt, eventHandler, data) {
@@ -2763,9 +3069,9 @@ release the author(s) of any liability related to their usage of this software.
             if (this.processing) {
                 this.processing.done = true;
             }
-           // var winSize = craigslist.fusion.Utilities.getWindowSize(this.browserWin);
-           // var scrollLoc = craigslist.fusion.Utilities.getScrollPosition(this.browserWin);
-//                var pageSize = craigslist.fusion.Utilities.getPageSize(this.browserWin);
+            // var winSize = craigslist.fusion.Utilities.getWindowSize(this.browserWin);
+            // var scrollLoc = craigslist.fusion.Utilities.getScrollPosition(this.browserWin);
+            //                var pageSize = craigslist.fusion.Utilities.getPageSize(this.browserWin);
             try {
                 var viewportTop =  container.scrollTop;
 
@@ -2815,13 +3121,13 @@ release the author(s) of any liability related to their usage of this software.
                         container.parentNode.removeEventListener("scroll", eventHandler.eventHandle);
                         
                     }
-                    //since cound is 0, maybe there is nothing left:
-                    //eventHandler.eventHandle
-                    //if so, cancel event handler
+                //since cound is 0, maybe there is nothing left:
+                //eventHandler.eventHandle
+                //if so, cancel event handler
                 }
-                //is there any items left?  if not, remove event handler
-                //todo: this code may cause more overhead than needed.
-                //if there is no more item, remove the event handler eventHandler.eventHandle from the scroll event listener
+            //is there any items left?  if not, remove event handler
+            //todo: this code may cause more overhead than needed.
+            //if there is no more item, remove the event handler eventHandler.eventHandle from the scroll event listener
             } catch (err) {
                 craigslist.fusion.Utilities.notify("Error (3) updating listing: " + sess, err);
             }
@@ -2868,8 +3174,8 @@ release the author(s) of any liability related to their usage of this software.
             var offsetTop = pos[1];
             
             if (this.counter < 7) {
-                //alert("offset top is: " + offsetTop + ", bottom : " + (offsetTop + elem.offsetHeight) + ", pos: " + position);
-                //this.counter++;
+            //alert("offset top is: " + offsetTop + ", bottom : " + (offsetTop + elem.offsetHeight) + ", pos: " + position);
+            //this.counter++;
             }
             
             if (offsetTop <= position && offsetTop + elem.offsetHeight >= position) {
@@ -2881,8 +3187,8 @@ release the author(s) of any liability related to their usage of this software.
             }
             return this.findIndex(elementList, midIndex + 1, highIndex, position);
             
-            //find next. Todo, also check to see if it matches border of an element, which can be in between, and not accounted in the height
-            //return -1;
+        //find next. Todo, also check to see if it matches border of an element, which can be in between, and not accounted in the height
+        //return -1;
         }
         
         this.modifySubList = function(evt, infoList, data) {
@@ -3036,16 +3342,16 @@ release the author(s) of any liability related to their usage of this software.
                     
                     if (!this.hideMap.contains(postId)) {    
                         hideLink = this.addPostAction(lastNode, craigslist.fusion.Resources.hideIcon,
-                        "Hide post",
-                        craigslist.fusion.Utilities.runWith(this, this.hideEntry, postId, params),
-                        null,
-                        newNodeBefore)[0];
+                            "Hide post",
+                            craigslist.fusion.Utilities.runWith(this, this.hideEntry, postId, params),
+                            null,
+                            newNodeBefore)[0];
                     } else {
                         hideLink = this.addPostAction(lastNode, craigslist.fusion.Resources.unHideIcon,
-                        "Unhide post",
-                        craigslist.fusion.Utilities.runWith(this, this.unHideEntry, postId, params),
-                        null,
-                        newNodeBefore)[0];
+                            "Unhide post",
+                            craigslist.fusion.Utilities.runWith(this, this.unHideEntry, postId, params),
+                            null,
+                            newNodeBefore)[0];
                     }
                     params[4] = hideLink;
                     lastNode = hideLink;
@@ -3174,9 +3480,15 @@ release the author(s) of any liability related to their usage of this software.
                 
                 if (responseText) {
                     var detailText;
+                    
+                    var subject = null;
+                    subject = this.getSubject(responseText);
+                    subject = unescape(subject == null? link.text : subject);
+
                     var emailInfo = this.parseEmailInfo(responseText);
                     if (emailInfo != null) {
                         emailInfo.url = link.href;
+                        emailInfo.subject = subject;
                     }
                     
                     var location = this.parseLocation(responseText);
@@ -3184,19 +3496,10 @@ release the author(s) of any liability related to their usage of this software.
 
                     var postingInfo = this.getPostingInfo(responseText);
                     if (postingInfo != null) {
-                       detailText += postingInfo;
+                        detailText += postingInfo;
                     }
 
-                    var subject = null;
-                    if (emailInfo != null) {
-                        subject = emailInfo.subject;
-                        subject = subject.replace("&amp;", "");
-                    }
-                    if (subject == null) {
-                        subject = this.getSubject(responseText);
-                    }
-                    subject = unescape(subject == null? link.text : subject);
-
+                    
                     var price = this.getPrice(subject);
                     
                     if (dispType == "main") {
@@ -3207,7 +3510,7 @@ release the author(s) of any liability related to their usage of this software.
                                 //add to map
                                 this.hideEntry(null, postId, [entry, null]);
                                 return;
-                                //}
+                            //}
                             }
                             
                             //if (search.maxSendCount != null) {
@@ -3219,7 +3522,7 @@ release the author(s) of any liability related to their usage of this software.
                             //is the list created yet?
                             if (entry != null) {
                                 if (typeof this.searchResult == "undefined") {
-                                    var parentNode = craigslist.fusion.Utilities.findFirstParent(link, "BLOCKQUOTE");
+                                    var parentNode = craigslist.fusion.Utilities.searchParent(link, "SECTION", {"class": "body"});
                                     if (parentNode != null) {
                                         var table = craigslist.fusion.Utilities.findNextSibling(parentNode.firstChild, "TABLE");
                                         if (table != null) {
@@ -3227,6 +3530,7 @@ release the author(s) of any liability related to their usage of this software.
                                         } else {
                                             this.searchResult = craigslist.fusion.Utilities.addNewAfter("fieldset", parentNode.firstChild);
                                         }
+                                        craigslist.fusion.Utilities.addClass(this.searchResult, "filteredArea");
                                         var legend = craigslist.fusion.Utilities.addNew("legend", this.searchResult);
                                         craigslist.fusion.Utilities.newText("Your Filtered Results", legend);
                                     }
@@ -3235,8 +3539,10 @@ release the author(s) of any liability related to their usage of this software.
                                 this.searchResult.appendChild(entry);
                             }
 
-                            if (search.sendEmailEnabled && emailInfo != null && emailInfo.address != null) {
-                                this.sendEmail(search, link, emailInfo, postId);
+                            if (search.sendEmailEnabled && emailInfo != null && emailInfo.isReady()) {
+                                this.sendEmail([search, link, emailInfo, postId]);
+                            } else if (search.sendEmailEnabled && emailInfo != null) {
+                                emailInfo.processEmail(this, this.sendEmail, [search, link, emailInfo, postId], null);
                             }
                         }
                     }
@@ -3290,6 +3596,7 @@ release the author(s) of any liability related to their usage of this software.
                     }
    
                     var detailLink = null;
+                    var imageSrcs = [];
                     
                     //if (this.preferences.getDetailLinkOnPostTitle().getValue()) {
                     if (dispType == "favorite" || dispType == "main") {
@@ -3298,45 +3605,49 @@ release the author(s) of any liability related to their usage of this software.
                             newNodeNextTo)[0];
                         lastNode = detailLink;
                         
-                    //}
+                        //}
+                        
+                        var advInfo = {
+                            "detailText": detailText, 
+                            "location": location, 
+                            "forceShow": true, 
+                            "postId" : postId, 
+                            "link" : link, 
+                            "price":  price, 
+                            "subject" : subject,
+                            "firstSibling": link.parentNode.firstChild, 
+                            "images": imageSrcs
+                        };
                         if (this.preferences.getDetailLinkOnPostTitle().getValue()) {
                             detailLink.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.showDetails,
-                                emailInfo, {"detailText": detailText, "location": location, "forceShow": true, 
-                                    "postId" : postId, "link" : link, "price":  price, "subject" : subject,
-                                 "firstSibling": link.parentNode.firstChild}), true);
+                                emailInfo, advInfo), true);
                         } else {
                             link.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.showDetails,
-                                emailInfo, {"detailText": detailText, "location": location, "forceShow": true, 
-                                    "postId" : postId, "link" : link, "price":  price, "subject" : subject,
-                                 "firstSibling": link.parentNode.firstChild}), true);
+                                emailInfo, advInfo), true);
                         }
                         
                         craigslist.fusion.Utilities.hover(link, link, null, null,
                             craigslist.fusion.Utilities.runWith(this, this.showDetailsMouseOver,
-                            emailInfo, {"detailText": detailText, "location": location, "forceShow": true, 
-                                    "postId" : postId, "link" : link, "price":  price, "subject" : subject,
-                                 "firstSibling": link.parentNode.firstChild}),
+                                emailInfo, advInfo),
                             craigslist.fusion.Utilities.runWith(this, this.handleDetailsMouseOut,
-                            emailInfo, {"detailText": detailText, "location": location, "forceShow": true, 
-                                    "postId" : postId, "link" : link, "price":  price, "subject" : subject,
-                                 "firstSibling": link.parentNode.firstChild})
-                        )
+                                emailInfo, advInfo)
+                            )
                     }
                     
                     if ((dispType == "favorite" || dispType == "main") && location) {
                         if (this.preferences.getShowMapButton().getValue()) {
                             mapLink = this.addPostAction(lastNode, craigslist.fusion.Resources.mapIcon,
-                            "Show in map", craigslist.fusion.Utilities.runWith(this, this.locationInGoogleMap,
-                            location[0], this.browserWin), null,
-                            newNodeNextTo)[0];
+                                "Show in map", craigslist.fusion.Utilities.runWith(this, this.locationInGoogleMap,
+                                    location[0], this.browserWin), null,
+                                newNodeNextTo)[0];
                             lastNode = mapLink;
                         }
 
                         if (this.preferences.getShowDirectionButton().getValue()) {
                             driveToLink = this.addPostAction(lastNode, craigslist.fusion.Resources.directionIcon,
-                            "Drive direction", craigslist.fusion.Utilities.runWith(this, this.showDriveToInGoogleMap,
-                            location[0], null), null,
-                            newNodeNextTo)[0];
+                                "Drive direction", craigslist.fusion.Utilities.runWith(this, this.showDriveToInGoogleMap,
+                                    location[0], null), null,
+                                newNodeNextTo)[0];
                             lastNode = driveToLink;
                         }
                     }
@@ -3358,21 +3669,21 @@ release the author(s) of any liability related to their usage of this software.
                         }
                     }
                     
-//                    if (dispType == "favorite") {
-//                        if (this.preferences.getShowFavButton().getValue()) {
-//                            var delFavLink = this.addPostAction(lastNode, craigslist.fusion.Resources.delFav,
-//                            "Remove favorite",
-//                            craigslist.fusion.Utilities.runWith(this, this.deleteFavorite, postId, [entry, unescape(subject? subject : link.text), link.href]),
-//                            null,
-//                            newNodeNextTo)[0];
-//                            lastNode = delFavLink;
-//                        }
-//                    }
+                    //                    if (dispType == "favorite") {
+                    //                        if (this.preferences.getShowFavButton().getValue()) {
+                    //                            var delFavLink = this.addPostAction(lastNode, craigslist.fusion.Resources.delFav,
+                    //                            "Remove favorite",
+                    //                            craigslist.fusion.Utilities.runWith(this, this.deleteFavorite, postId, [entry, unescape(subject? subject : link.text), link.href]),
+                    //                            null,
+                    //                            newNodeNextTo)[0];
+                    //                            lastNode = delFavLink;
+                    //                        }
+                    //                    }
                     
-                   if (dispType == "favorite" || dispType == "favorite_print") {
-                     lastNode = newNodeNextTo("br", link.parentNode.lastChild);
-                   }
-                   lastNode = entry.lastChild;
+                    if (dispType == "favorite" || dispType == "favorite_print") {
+                        lastNode = newNodeNextTo("br", link.parentNode.lastChild);
+                    }
+                    lastNode = entry.lastChild;
 
                     //var p = link.parentNode;
                     //p.className = "";
@@ -3398,14 +3709,16 @@ release the author(s) of any liability related to their usage of this software.
                     var imageScrollArea = null;
                     var imageArea = null;
                     var eventData;
-                    
+                    var srcs = null;
                     if (matches) {
-                        var srcs = this.getEntryImages(matches);
+                        srcs = this.getEntryImages(matches);
                         var span = null;
                         if (this.doShowGridViewImageIcons) {
                             var p = craigslist.fusion.Utilities.searchParent(link, "P", {});
                             if (!p) {
-                                span = craigslist.fusion.Utilities.searchParent(link, "span", {"class": "i"});
+                                span = craigslist.fusion.Utilities.searchParent(link, "span", {
+                                    "class": "i"
+                                });
                             } else {
                                 span = craigslist.fusion.Utilities.findNode(p, "span"); //, {"class": "i"});    //Todo: class search somehow doesn't work
                             }
@@ -3422,12 +3735,18 @@ release the author(s) of any liability related to their usage of this software.
                             //craigslist.fusion.Utilities.notify("not found")
                             }
                         }
+
+                        if (srcs != null && srcs.length > 0) {
+                            for (var i = 0; i < srcs.length; i++) {
+                                imageSrcs[imageSrcs.length] = srcs[i];
+                            }
+                        }
                         var img;
                         if (this.doShowMapImageIcons) {
                             //todo: find the grid image
                             //find div class="igi"
                             //find img
-                            if (srcs.length > 0) {
+                            if (srcs != null && srcs.length > 0) {
                                 img = craigslist.fusion.Utilities.addNewBefore("img", link.parentNode.firstChild);
                                 craigslist.fusion.Utilities.addNewAfter("br", img);
                                 img.className = this.THUMBNAIL_IMAGE;
@@ -3467,29 +3786,29 @@ release the author(s) of any liability related to their usage of this software.
                             var resizerData = new Array();
                             var images = new Array();
                             
-                            if (srcs.length > 0) {
+                            if (srcs != null && srcs.length > 0) {
                                 imageBandResizer = craigslist.fusion.Utilities.runWith(this, this.imageBandResizer, resizerData, null);
                                 resizerData[0] = images;
                                 resizerData[1] = 0; //image load count
                                 
-                               lastNode = newNodeNextTo("br", lastNode);
+                                lastNode = newNodeNextTo("br", lastNode);
 
-                               scrollDiv = newNodeNextTo("div", lastNode);
-                               scrollDiv.setAttribute("style", "maxHeight: " + this.size + "px !important; maxWidth: 100% !important; \
+                                scrollDiv = newNodeNextTo("div", lastNode);
+                                scrollDiv.setAttribute("style", "maxHeight: " + this.size + "px !important; maxWidth: 100% !important; \
                                     width: 100% ; display: inline-block; overflow: hidden; ");    //overflow-x: auto;
-                               div = craigslist.fusion.Utilities.addNew("div", scrollDiv);
-                               div.setAttribute("style", "maxHeight: " + this.size + "px; display: inline-block; width: auto !important; white-space: nowrap;");
-                               div.style.position = "relative";
-                               div.style.top = "0px";
-                               div.style.left = "0px";
-                               resizerData[2] = div;
-                               resizerData[3] = scrollDiv;
-                               resizerData[4] = div;
+                                div = craigslist.fusion.Utilities.addNew("div", scrollDiv);
+                                div.setAttribute("style", "maxHeight: " + this.size + "px; display: inline-block; width: auto !important; white-space: nowrap;");
+                                div.style.position = "relative";
+                                div.style.top = "0px";
+                                div.style.left = "0px";
+                                resizerData[2] = div;
+                                resizerData[3] = scrollDiv;
+                                resizerData[4] = div;
                                
-                               lastNode = scrollDiv;
-                               imageArea = div;
+                                lastNode = scrollDiv;
+                                imageArea = div;
                                
-                               imageScrollArea = scrollDiv;
+                                imageScrollArea = scrollDiv;
                             }
                             
                             var maxNumberOfThumbnails = this.preferences.getMaxNumberOfThumbnails().getValue();
@@ -3531,7 +3850,7 @@ release the author(s) of any liability related to their usage of this software.
                                             img.src, [false, link.parentNode.firstChild, postId]),
                                         craigslist.fusion.Utilities.runWith(this, this.handleImageMouseOut,
                                             img.src, [true, link.parentNode.firstChild, postId])
-                                    );
+                                        );
                                 }
                             }
                         }
@@ -3548,7 +3867,7 @@ release the author(s) of any liability related to their usage of this software.
                         //if (imageArea != null) {
                         //    detailTextDiv.setAttribute("style", "width: expression('200px'); overflow-x: hidden; overflow-y: auto; border: none; word-wrap: break-word !important; word-break: break-all !important;");
                         //} else {
-                            detailTextDiv.setAttribute("style", "overflow-x: hidden; overflow-y: auto; border: none; word-wrap: break-word !important; word-break: break-all !important;");
+                        detailTextDiv.setAttribute("style", "overflow-x: hidden; overflow-y: auto; border: none; word-wrap: break-word !important; word-break: break-all !important;");
                         //}
 
                         //detailTextDiv.style.maxWidth = 250 + "px";   //@todo: config   //todo: the width may reduce with image
@@ -3577,9 +3896,7 @@ release the author(s) of any liability related to their usage of this software.
                         //detailTextDiv.textContent = subDetailText;
                         //var detailTextLink = craigslist.fusion.Utilities.addNew("a", detailTextDiv);
                         detailTextDiv.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.showDetails,
-                            emailInfo, {"detailText": detailText, "location": location, "forceShow": true, 
-                                    "postId" : postId, "link" : link, "price":  price, "subject" : subject,
-                                 "firstSibling": link.parentNode.firstChild}), true);
+                            emailInfo, advInfo), true);
 
                         craigslist.fusion.Utilities.newText(subDetailText, detailTextDiv);
                     
@@ -3589,10 +3906,10 @@ release the author(s) of any liability related to their usage of this software.
                             var params = [detailTextDiv, entry, imageArea];
                             var eventListener = craigslist.fusion.Utilities.runWith(this, this.resizeSubText,
                                 params, null);
-                                params[3] = eventListener;
-                                params[4] = images.length;
-                                params[5] = 0;
-                                params[6] = imageScrollArea;
+                            params[3] = eventListener;
+                            params[4] = images.length;
+                            params[5] = 0;
+                            params[6] = imageScrollArea;
                                     
                             for (var i = 0; i < images.length; i++) {
                                 images[i].addEventListener("load", eventListener, false);
@@ -3638,16 +3955,16 @@ release the author(s) of any liability related to their usage of this software.
                             craigslist.fusion.Utilities.runWith(this, this.showImagePreviewMouseOver,
                                 srcs[i], [false, link.parentNode.firstChild, postId]),
                             craigslist.fusion.Utilities.runWith(this, this.handleImageMouseOut,
-                            srcs[i], [true, link.parentNode.firstChild, postId])
-                        );
+                                srcs[i], [true, link.parentNode.firstChild, postId])
+                            );
                     } else {
-                        //console.log(link);
+                    //console.log(link);
                     }
                 }
-                //img.parentNode
-                //craigslist.fusion.Utilities.newText(" ", img.parentNode.parentNode);
+            //img.parentNode
+            //craigslist.fusion.Utilities.newText(" ", img.parentNode.parentNode);
             }
-            //craigslist.fusion.Utilities.addNew("br", img.parentNode);
+        //craigslist.fusion.Utilities.addNew("br", img.parentNode);
         }
         
         this.getEntryImages = function(matches) {
@@ -3664,11 +3981,12 @@ release the author(s) of any liability related to their usage of this software.
                 //replace the /thumbnails:
                 str = str.replace("thumb/", "");
                 
-                index = str.lastIndexOf("_");
-                if (index > 0) {
-                    str = str.substring(0, index) + "_600x450.jpg";
+                if (str.indexOf("craigslist") >= 0) {
+                    index = str.lastIndexOf("_");
+                    if (index > 0) {
+                        str = str.substring(0, index) + "_600x450.jpg";
+                    }
                 }
-                
                 var existed = imageMap.get(str);
                 if (existed != null) {
                     continue;
@@ -3758,10 +4076,10 @@ release the author(s) of any liability related to their usage of this software.
             //craigslist.fusion.Utilities.newTextAfter("\u00a0", link);
             //also consider: 
             link.style.padding = "0px";
-//            link.style.paddingLeft = "0px";
+            //            link.style.paddingLeft = "0px";
             link.style.paddingRight = this.preferences.getButtonIconSpacing() + "px";
-//            link.style.paddingTop = "0px";
-//            link.style.paddingBottom = "0px";
+            //            link.style.paddingTop = "0px";
+            //            link.style.paddingBottom = "0px";
             
             link.style.margin = "0px";
             //link.style.marginRight = this.preferences.getButtonIconSpacing() + "px";
@@ -3813,11 +4131,11 @@ release the author(s) of any liability related to their usage of this software.
             action = extracts[0];
 
             address += action;
-            var to = emailInfo.address;
+            var to = emailInfo.getEmailAddress();
             var bcEmail = this.preferences.getBcEmail().getValue();
             //enctype=multipart/form-data
             var body = search.emailBody + "\n\n" + link;
-            var subject = emailInfo.subject;
+            var subject = craigslist.fusion.Utilities.escapeUrl(emailInfo.getSubject());
 
             var data = "nvp_bu_send=Send";
             data += "&body=" + craigslist.fusion.Utilities.escapeUrl(body);
@@ -3876,12 +4194,17 @@ release the author(s) of any liability related to their usage of this software.
             emailIcon.setAttribute("title", "Email sent");
         }
 
-        this.sendEmail = function(search, link, emailInfo, postId) {
+        this.sendEmail = function(params) {
+            var search = params[0];
+            var link = params[1];
+            var emailInfo = params[2];
+            var postId = params[3];
+            
             if (this.emailedMap.contains(postId)) {
                 return;
             }
             var address = "https://mail.google.com/mail/h/" + craigslist.fusion.Utilities.rand(13) +
-                "/?v=b&pv=tl&cs=b";
+            "/?v=b&pv=tl&cs=b";
             try {
                 var req = craigslist.fusion.AjaxRequestFactory.getRequest({
                     method: "GET",
@@ -3890,7 +4213,7 @@ release the author(s) of any liability related to their usage of this software.
                         "Accept" : "text/html,text/xml,text/plain"
                     },
                     contentHandler: craigslist.fusion.Utilities.runWith(this, this.processEmailForm,
-                    new Array(address, search, link, emailInfo, postId), ""),
+                        new Array(address, search, link, emailInfo, postId), ""),
                     data : null
                 });
                 req.send();
@@ -3988,29 +4311,29 @@ release the author(s) of any liability related to their usage of this software.
             return null;
         }
 
-	// - $2450 / 2br - "Cozy Cottage" for RENT - PET FRIENDLY! (Fort Washington, MD)
+        // - $2450 / 2br - "Cozy Cottage" for RENT - PET FRIENDLY! (Fort Washington, MD)
         this.priceRegx = [
-            new RegExp("\\$([\\s\\S]+?)\\s", "g")
+        new RegExp("\\$([\\s\\S]+?)\\s", "g")
         ];
 
         this.getPrice = function(subj) {
             try {
                
-               var price = null;
-               var content = null;
-               for (var i = 0; i < this.priceRegx.length; i++) {
-                   this.priceRegx[i].lastIndex = 0;
-                   content = this.priceRegx[i].exec(unescape(subj));
-                   if (content != null && content.length > 1) {
-                       price = content[1];
-                       break;
-                   }
-               }
+                var price = null;
+                var content = null;
+                for (var i = 0; i < this.priceRegx.length; i++) {
+                    this.priceRegx[i].lastIndex = 0;
+                    content = this.priceRegx[i].exec(unescape(subj));
+                    if (content != null && content.length > 1) {
+                        price = content[1];
+                        break;
+                    }
+                }
                 return price;
             } catch (error) {
-               return null;
+                return null;
             }
-       }
+        }
         /*
         this.getPrice = function(title) {
             var extracts = craigslist.fusion.Utilities.extractText(title, "%24", "%20", 0);
@@ -4093,7 +4416,7 @@ release the author(s) of any liability related to their usage of this software.
                     imageArea,  new Array(-2, prevDiv, nextDiv, imageScroll)),
                 craigslist.fusion.Utilities.runWith(this, this.stopImageBandAnimation,
                     imageArea,  new Array(-2, prevDiv, nextDiv, imageScroll))
-            );
+                );
 
             prevDiv.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.flipImageBandPage,
                 imageArea,  new Array(1, prevDiv, nextDiv, imageScroll)), true);
@@ -4103,7 +4426,7 @@ release the author(s) of any liability related to their usage of this software.
                     imageArea,  new Array(2, prevDiv, nextDiv, imageScroll)),
                 craigslist.fusion.Utilities.runWith(this, this.stopImageBandAnimation,
                     imageArea,  new Array(2, prevDiv, nextDiv))
-            );
+                );
             
             //var prevIcon = data[1];
             //remove the event from the image
@@ -4121,11 +4444,11 @@ release the author(s) of any liability related to their usage of this software.
         }
 
         this.imageBandResizer = function(evt, data, param2) {
-    //        data[0] = images;
-    //        data[1] = 0; //image load count
-    //        data[2] = imgTable;
-    //        data[3] = scrollDiv;
-    //        data[4] = div;
+            //        data[0] = images;
+            //        data[1] = 0; //image load count
+            //        data[2] = imgTable;
+            //        data[3] = scrollDiv;
+            //        data[4] = div;
             data[1] = data[1] + 1;
             var images = data[0];
             if (data[1] < images.length) {
@@ -4254,17 +4577,17 @@ release the author(s) of any liability related to their usage of this software.
             div.style.left = newPos + "px";
             if (newPos == 0) {
                 prevIcon.textContent = "";
-                //prevIcon.style.display = "none";
+            //prevIcon.style.display = "none";
             } else {
                 prevIcon.textContent = "<";
-                //prevIcon.style.display = "block";
+            //prevIcon.style.display = "block";
             }
             if (newPos <= minPos) {
                 nextIcon.textContent = "";
-                //nextIcon.style.display = "none";
+            //nextIcon.style.display = "none";
             } else {
                 nextIcon.textContent = ">";
-                //nextIcon.style.display = "block";
+            //nextIcon.style.display = "block";
             }
         }
 
@@ -4297,16 +4620,16 @@ release the author(s) of any liability related to their usage of this software.
                     }
                 }
                 */
-               if (this.renderImageDetail) {
-                   this.renderImageDetail(postId, lastPostHeaderNode, imgSource);
-                   return;
-               }
-               var img;
+                if (this.renderImageDetail) {
+                    this.renderImageDetail(postId, lastPostHeaderNode, imgSource);
+                    return;
+                }
+                var img;
                
-               //craigslist.fusion.Utilities.removeAllChildren(this.previewWindow.contentArea);
+                //craigslist.fusion.Utilities.removeAllChildren(this.previewWindow.contentArea);
                
-               var childNodes = new Array();
-               childNodes.push.apply(childNodes, this.previewWindow.contentArea.childNodes);
+                var childNodes = new Array();
+                childNodes.push.apply(childNodes, this.previewWindow.contentArea.childNodes);
                 if (this.stickyMode || this.stickyMode == "true") {
                     this.layout.setEnabled(false);
                     if (this.stickyWindow != this.previewWindow) {
@@ -4320,7 +4643,7 @@ release the author(s) of any liability related to their usage of this software.
                     this.layout.setEnabled(true);
                 } else {
                     this.previewWindow.setVisible(true);
-                    //this.previewWindow.setTransparent(1);
+                //this.previewWindow.setTransparent(1);
                 }
                 img = craigslist.fusion.Utilities.addNew("img", this.previewWindow.contentArea);
                 img.setAttribute("style", "display: none;");
@@ -4351,13 +4674,13 @@ release the author(s) of any liability related to their usage of this software.
         }
         
         this.postContentRegx = [
-            new RegExp("<section id\\=\\\"postingbody\\\">([\\s\\S]*?)<\\/section>", "g"),
-            new RegExp("<section id\\=\\\"userbody\\\">([\\s\\S]*?)<\\/section>", "g"),
-            new RegExp("id\\=\\\"userbody\\\">([\\s\\S]*?)<script", "g"),
-            new RegExp("id\\=\\\"userbody\\\">([\\s\\S]*?)<\\/section>", "g"),
-            new RegExp("<div id\\=\\\"userbody\\\">([\\s\\S]*?)<script\\stype\\=\\\"text","g"),
-            new RegExp("<div id\\=\\\"userbody\\\">([\\s\\S]*?)<ul>[\\s]*?<li>","g"),
-            new RegExp("<div id\\=\\\"userbody\\\">([\\s\\S]*?)<ul class\\=\\\"blurbs\\\">"),
+        new RegExp("<section id\\=\\\"postingbody\\\">([\\s\\S]*?)<\\/section>", "g"),
+        new RegExp("<section id\\=\\\"userbody\\\">([\\s\\S]*?)<\\/section>", "g"),
+        new RegExp("id\\=\\\"userbody\\\">([\\s\\S]*?)<script", "g"),
+        new RegExp("id\\=\\\"userbody\\\">([\\s\\S]*?)<\\/section>", "g"),
+        new RegExp("<div id\\=\\\"userbody\\\">([\\s\\S]*?)<script\\stype\\=\\\"text","g"),
+        new RegExp("<div id\\=\\\"userbody\\\">([\\s\\S]*?)<ul>[\\s]*?<li>","g"),
+        new RegExp("<div id\\=\\\"userbody\\\">([\\s\\S]*?)<ul class\\=\\\"blurbs\\\">"),
         ];
 
         this.parseDetailText = function(details) {
@@ -4378,17 +4701,17 @@ release the author(s) of any liability related to their usage of this software.
 
             if ((content == null) || (content == null)) {
                 return "No content found. ";
-                //return this.parseDetailText2(details);
+            //return this.parseDetailText2(details);
             }
             
             return content;
         }
         
         this.postContentRegx2 = [
-            new RegExp("<section id\\=\\\"userbody\\\">", "gm"),
-            new RegExp("id\\=\\\"userbody\\\">([\\s\\S]*?)", "gm"),
-            new RegExp("id\\=\\\"userbody\\\">([\\s\\S]*?)", "gm"),
-            new RegExp("<div id\\=\\\"userbody\\\">([\\s\\S]*?)","gm"),
+        new RegExp("<section id\\=\\\"userbody\\\">", "gm"),
+        new RegExp("id\\=\\\"userbody\\\">([\\s\\S]*?)", "gm"),
+        new RegExp("id\\=\\\"userbody\\\">([\\s\\S]*?)", "gm"),
+        new RegExp("<div id\\=\\\"userbody\\\">([\\s\\S]*?)","gm"),
         ];
         
         this.parseDetailText2 = function(details) {
@@ -4409,17 +4732,17 @@ release the author(s) of any liability related to their usage of this software.
 
             if ((content == null) || (content == null)) {
                 return "No content found. ";
-                //return details;
+            //return details;
             }
             return content;
         }
         
         this.subjectRegx = [
-            new RegExp("<h2 class=\\\"postingtitle\\\">[\\s\\S]*?<span class=\\\"star\\\"></span>([\\s\\S]*?)</h2>", "gm")
+        new RegExp("<h2 class=\\\"postingtitle\\\">[\\s\\S]*?<span class=\\\"star\\\"></span>([\\s\\S]*?)</h2>", "gm")
         ];
 
         this.getSubject = function(details) {
-           if (!details) {
+            if (!details) {
                 return "No subject found.";
             }
 
@@ -4438,10 +4761,40 @@ release the author(s) of any liability related to their usage of this software.
             }
             return content;
         }
-        
+        this.replyTagRegex = [
+        new RegExp("<span class\\=\\\"replylink\\\"><a href=\"([\\s\\S]*?)\\\">reply</a>", "g"),
+        new RegExp("<span class\\=\\\"replytext\\\"><a href=\"([\\s\\S]*?)\\\">reply</a>", "g")
+        ];
+
         this.parseEmailInfo = function(details) {
+            //<span class="replytext"><a href="/reply/1111111">reply</a></span>
+
+            var content = null;
+            for (var i = 0; i < this.replyTagRegex.length; i++) {
+                this.replyTagRegex[i].lastIndex = 0;
+                content = this.replyTagRegex[i].exec(details);
+                if (content != null && content.length > 1) {
+                    content = content[1];
+                    break;
+                }
+            }
+            if (content != null) {
+                if (!this.baseUrl) {
+                    var url = this.browserWin.location.href;
+                    var index = url.indexOf("//");
+                    if (index < 0) return null;
+                    index = url.indexOf("/", index + 2);
+                    this.baseUrl = url.substring(0, index);
+                }
+                return new craigslist.fusion.EmailInfo(this.baseUrl + content);
+            }
+
+            return null;
+        }
+        
+        this.parseEmailInfo2s = function(details) {
             var emailInfo = {};
-            var emailStart = "<a href=\"mailto:";
+            var emailStart = "<a class=\"replylink\" href=\"mailto:";
             var index = details.indexOf(emailStart);
             if (index < 0) {
                 return null;
@@ -4463,100 +4816,103 @@ release the author(s) of any liability related to their usage of this software.
         }
 
         this.postinginfosRegx = [
-            new RegExp("<div class\\=\\\"postinginfos\\\">[\\s\\S]*?</div>", "g")
+        new RegExp("<div class\\=\\\"postinginfos\\\">[\\s\\S]*?</div>", "g")
         ];
 
         this.getPostingInfo = function(details) {
             try {
             
-               var postingInfo = null;
-               var content = null;
-               for (var i = 0; i < this.postinginfosRegx.length; i++) {
-                   this.postinginfosRegx[i].lastIndex = 0;
-                   content = this.postinginfosRegx[i].exec(details);
-                   if (content != null && content.length > 0) {
-                       postingInfo = content[0];
-                       break;
-                   }
-               }
+                var postingInfo = null;
+                var content = null;
+                for (var i = 0; i < this.postinginfosRegx.length; i++) {
+                    this.postinginfosRegx[i].lastIndex = 0;
+                    content = this.postinginfosRegx[i].exec(details);
+                    if (content != null && content.length > 0) {
+                        postingInfo = content[0];
+                        break;
+                    }
+                }
 		
-               return postingInfo;
+                return postingInfo;
             } catch (error) {
-               return null;
+                return null;
             }
-       }
+        }
         
-//        <p class="postinginfo">Updated: <date title="1372689844000">2013-07-01, 10:44AM EDT</date></p>
+        //        <p class="postinginfo">Updated: <date title="1372689844000">2013-07-01, 10:44AM EDT</date></p>
         this.updatedDateRegx = [
-            new RegExp("<p class\\=\\\"postinginfo\\\">Updated: <date title=\"[^\"]*?\">([\\s\\S]*?)</date></p>", "g")
+        new RegExp("<p class\\=\\\"postinginfo\\\">updated: <time datetime=\"([^\"]*?)\">[\\s\\S]*?</time></p>", "g"),
+        new RegExp("<p class\\=\\\"postinginfo\\\">Updated: <time datetime=\"([^\"]*?)\">[\\s\\S]*?</time></p>", "g"),
+        new RegExp("<p class\\=\\\"postinginfo\\\">Updated: <date title=\"[^\"]*?\">([\\s\\S]*?)</date></p>", "g")
         ];
 
         this.getPostUpdateDuration = function(details) {
             try {
             
-               var date = "";
-               var content = null;
-               for (var i = 0; i < this.updatedDateRegx.length; i++) {
-                   this.updatedDateRegx[i].lastIndex = 0;
-                   content = this.updatedDateRegx[i].exec(details);
-                   if (content != null && content.length > 1) {
-                       date = content[1];
-                       break;
-                   }
-               }
+                var date = "";
+                var content = null;
+                for (var i = 0; i < this.updatedDateRegx.length; i++) {
+                    this.updatedDateRegx[i].lastIndex = 0;
+                    content = this.updatedDateRegx[i].exec(details);
+                    if (content != null && content.length > 1) {
+                        date = content[1];
+                        break;
+                    }
+                }
 
-//                var dateStr = date;
+                //                var dateStr = date;
                 return this.getElapsedTime(date);
             } catch (error) {
-               return null;
+                return null;
             }
-       }
+        }
 
         this.postDateRegx = [
-            new RegExp("Posted: <date title=\"[^\"]*?\">([\\s\\S]*?)</date>", "g"),
-            new RegExp("<date>([\\s\\S]*?)</date>", "g"),
-            new RegExp("<div class\\=\\\"postingdate\\\">Date: <time>([\\s\\S]*?)</time></div>", "g"),
-            new RegExp("<span class\\=\\\"postingdate\\\">Date: ([\\s\\S]*?)</span>", "g")
+        new RegExp("Posted: <time datetime=\"([^\"]*?)\">[\\s\\S]*?</time>", "g"),
+        new RegExp("Posted: <date title=\"[^\"]*?\">([\\s\\S]*?)</date>", "g"),
+        new RegExp("<date>([\\s\\S]*?)</date>", "g"),
+        new RegExp("<div class\\=\\\"postingdate\\\">Date: <time>([\\s\\S]*?)</time></div>", "g"),
+        new RegExp("<span class\\=\\\"postingdate\\\">Date: ([\\s\\S]*?)</span>", "g")
         ];
 
         this.parsePostDate = function(details) {
             try {
             
-               var date = "";
-               var content = null;
-               for (var i = 0; i < this.postDateRegx.length; i++) {
-                   this.postDateRegx[i].lastIndex = 0;
-                   content = this.postDateRegx[i].exec(details);
-                   if (content != null && content.length > 1) {
-                       date = content[1];
-                       break;
-                   }
-               }
+                var date = "";
+                var content = null;
+                for (var i = 0; i < this.postDateRegx.length; i++) {
+                    this.postDateRegx[i].lastIndex = 0;
+                    content = this.postDateRegx[i].exec(details);
+                    if (content != null && content.length > 1) {
+                        date = content[1];
+                        break;
+                    }
+                }
                 //craigslist.fusion.Utilities.notify("The date string is: " + date);
-//                var dateStr = date;
+                //                var dateStr = date;
 
                 return this.getElapsedTime(date);
             } catch (error) {
-               return null;
+                return null;
             }
-       }
+        }
                 
-       this.getElapsedTime = function(date) {
-           try {
+        this.getElapsedTime = function(date) {
+            try {
                 
-               var postDate = {};
+                var postDate = {};
 
                 if (date == null || date.length == 0) {
                     return null;
                 }
-
+                /*
                 date = date.replace(",", "");
                 date = date.replace("AM", " AM");
                 date = date.replace("PM", " PM");
+                date = date.replace("  ", " ");
                 date = date.replace(/\-/g, "/");
-
+		*/
                 date = Date.parse(date);
-
                 if (date == null) return null;
                 
                 date = new Date(date);
@@ -4680,11 +5036,11 @@ release the author(s) of any liability related to their usage of this software.
                 if (extract != null) {
                     name = extract[0];
                 } else {
-		        extract= craigslist.fusion.Utilities.extractText(details, "-->", "<small>", startIndex);
-		        if (extract != null) {
-		            name = extract[0];
-		        }
-		}
+                    extract= craigslist.fusion.Utilities.extractText(details, "-->", "<small>", startIndex);
+                    if (extract != null) {
+                        name = extract[0];
+                    }
+                }
             } else {
                 extract = craigslist.fusion.Utilities.extractText(details, "<!-- CLTAG GeographicArea=", " -->", 0);
                 if (extract != null) {
@@ -4742,7 +5098,7 @@ release the author(s) of any liability related to their usage of this software.
         this.getPostDetailArea = function(postId, refNode) {
             var contentArea = this.infoWindow.contentArea;
             craigslist.fusion.Utilities.removeAllChildren(contentArea);
-        return contentArea;
+            return contentArea;
         }
 
         this.showDetails = function(evt, emailInfo, data) {
@@ -4772,6 +5128,7 @@ release the author(s) of any liability related to their usage of this software.
             var doc = this.browserWin.document;
 
             var detailArea = this.getPostDetailArea(postId, firstSibling);
+            detailArea.scrollTop = 0;
             
             detailArea.style.color = this.preferences.getForegroundColor().getValue();
             detailArea.style.backgroundColor = this.preferences.getBackgroundColor().getValue();
@@ -4802,8 +5159,8 @@ release the author(s) of any liability related to their usage of this software.
                 if (emailTemplates != null && emailTemplates.length == 0) {
                     template = new Array();
                     emailTemplates[0] = template;
-                    template[0] = "Generic Email Template";
-                    template[1] = "Hi,\n\nI want to buy the item.  I can pick it up at your convenient time.  You can contact me for time and location by email or phone at [(ddd) ddd-dddd].\n\nThanks, \n\n[My Name]"
+                    template[0] = "Email Template";
+                    template[1] = "Hi,\n\nI want to buy it.  I can pick it up today.  My phone number is [(ddd) ddd-dddd].\n\nThanks, \n\n[My Name]"
                     template[2] = "";
                     emailTemplateData = serializer.encode(emailTemplates);
                     craigslist.fusion.Utilities.pref_setValue("EMAIL_TEMPLATES", emailTemplateData);
@@ -4835,17 +5192,18 @@ release the author(s) of any liability related to their usage of this software.
             var advInfo = {};
             advInfo.price = price;
             advInfo.subject = subject;
+            advInfo.images = data.images;
             this.renderDetailArea(link, detailArea, detailText, location, advInfo, doc);
-
         }
 
         this.renderDetailArea = function(link, detailArea, detailText, location, advInfo, doc) {
             var price = advInfo.price;
             if (typeof price == "undefined" || price == null) {
-              price = "$?.??";
+                price = "$?.??";
             } else {
-              price = "$" + price;
+                price = "$" + price;
             }
+            var images = advInfo.images;
 
             craigslist.fusion.Utilities.addNew("br", detailArea);
             
@@ -4857,14 +5215,15 @@ release the author(s) of any liability related to their usage of this software.
             if (this.preferences.getConvertTextToLowerCase().getValue()) {
                 subjText = this.toLowerCase(subjText);
             }
+            subjText = craigslist.fusion.Utilities.parseEntity(subjText);
             subjText = subjText.replace("&amp;", "");
-	    if (subjText.indexOf("$") < 0) {
-	       subjText += " - " + price;
+            if (subjText.indexOf("$") < 0) {
+                subjText += " - " + price;
             }
             if (subjText.indexOf("(") < 0) {
-	       if (typeof location != "undefined" && location != null) {
-	         subjText += " (" + location[1] + ")";
-	       }
+                if (typeof location != "undefined" && location != null) {
+                    subjText += " (" + location[1] + ")";
+                }
             }
             
             var textNode = craigslist.fusion.Utilities.newText(subjText, subject);
@@ -4921,13 +5280,43 @@ release the author(s) of any liability related to their usage of this software.
                 for (var i = 0; i < textList.length; i++) {
                     textNode = craigslist.fusion.Utilities.newText(textList[i], div);
                     //if (i < textList.length - 1) {
-                        craigslist.fusion.Utilities.addNew("br", div);
-                    //}
+                    craigslist.fusion.Utilities.addNew("br", div);
+                //}
                 }
                 textNode = craigslist.fusion.Utilities.newText("_._", div);
             }
             
-            //div.innerText = detailText;
+            if (this.preferences.getShowImagesInDetails().getValue()) {
+                var table = doc.createElement("table");
+                table.setAttribute("style", "width: 100%; padding: 3px !important;");
+                var td;
+                var tr;
+                div.appendChild(table);
+                var imagesPerRow = this.preferences.getEmbedImagesPerRow().getValue();
+                ;
+                var imageHeight = this.preferences.getEmbedImageHeight().getValue();
+                var count = 0;
+                if (typeof images == "undefined" || images == null) {
+                    images = [];
+                }
+                while (count < images.length) {
+                    tr = doc.createElement("tr");
+                    table.appendChild(tr);
+                    for (var j = 0; j < imagesPerRow; j++) {
+                        if (count >= images.length) {
+                            break;
+                        }
+                        td = doc.createElement("td");
+                        td.setAttribute("style", "padding: 3px !important;");
+                        tr.appendChild(td);
+                        var img = doc.createElement("img");
+                        img.setAttribute("src", images[count]);
+                        img.setAttribute("style", "height: " + imageHeight + "px");
+                        td.appendChild(img);
+                        count++;
+                    }
+                }
+            }
             
             /*
             if (this.firstShown) {
@@ -5032,8 +5421,8 @@ release the author(s) of any liability related to their usage of this software.
                             //} else if (node.attributes[i].name == "height" && attrValue.indexOf("%") >= 0) {
                                 
                             //} else {
-                                container.setAttribute(this.supportedKeys.get(node.attributes[i].name), this.decodeHtml(attrValue));
-                            //}
+                            container.setAttribute(this.supportedKeys.get(node.attributes[i].name), craigslist.fusion.Utilities.parseEntity(attrValue));
+                        //}
                         } else {
                             vyho.lib.parser.log("not supported attr: " + node.attributes[i].name);
                         }
@@ -5048,7 +5437,7 @@ release the author(s) of any liability related to their usage of this software.
                     if (this.preferences.getConvertTextToLowerCase().getValue()) {
                         text = this.toLowerCase(text);
                     }
-                    craigslist.fusion.Utilities.newText(this.decodeHtml(text), container);
+                    craigslist.fusion.Utilities.newText(craigslist.fusion.Utilities.parseEntity(text), container);
                 }
             } else {
                 if (node.nodeName != "rootNode") vyho.lib.parser.log("not supported node: " + node.nodeName);
@@ -5059,21 +5448,6 @@ release the author(s) of any liability related to their usage of this software.
                 }
             }
             return counter;
-        }
-        
-        this.decodeHtml = function(text) {
-            var map = {"gt":">","lt":"<","quote":"\"","nbsp": " ","amp": "&"};
-            try {
-                return text.replace(/&(#(?:x[0-9a-f]+|\d+)|[a-z]+);?/gi, function($0, $1) {
-                    if ($1[0] === "#") {
-                        return String.fromCharCode($1[1].toLowerCase() === "x" ? parseInt($1.substr(2), 16)  : parseInt($1.substr(1), 10));
-                    } else {
-                        return map.hasOwnProperty($1) ? map[$1] : $0;
-                    }
-                });
-            } catch (err) {
-                return text;
-            }
         }
         
         this.parseText = function(htmlText) {
@@ -5087,7 +5461,7 @@ release the author(s) of any liability related to their usage of this software.
                 var res = vyho.lib.parser.parse(escapedText);
             } catch (err) {
                 throw err;
-                //return null;
+            //return null;
             }
             
             return res;
@@ -5098,7 +5472,7 @@ release the author(s) of any liability related to their usage of this software.
             var escapedText = htmlText.replace("\u000a", "", "gim");    //zap new lines
             
             escapedText = escapedText.replace("<br>", "\u000a", "gim");
-             escapedText = escapedText.replace("<p>", "\u000a\u000a", "gim");
+            escapedText = escapedText.replace("<p>", "\u000a\u000a", "gim");
             escapedText = escapedText.replace("<li>", "\u000a  *    ", "gim");
             
             escapedText = this.removeTags(escapedText);
@@ -5167,7 +5541,7 @@ release the author(s) of any liability related to their usage of this software.
                 //replace the icon
                 var params = [entry, link, newNodeBefore, lastNode];
                 var hideLink = this.addPostAction(lastNode, craigslist.fusion.Resources.hideIcon,
-                "Hide post",
+                    "Hide post",
                     craigslist.fusion.Utilities.runWith(this, this.hideEntry, postId, params),
                     null,
                     newNodeBefore)[0];
@@ -5194,10 +5568,10 @@ release the author(s) of any liability related to their usage of this software.
                 
                 var params = [entry, link, newNodeBefore, lastNode];
                 var hideLink = this.addPostAction(lastNode, craigslist.fusion.Resources.unHideIcon,
-                "Unhide post",
-                craigslist.fusion.Utilities.runWith(this, this.unHideEntry, postId, params),
-                null,
-                newNodeBefore)[0];
+                    "Unhide post",
+                    craigslist.fusion.Utilities.runWith(this, this.unHideEntry, postId, params),
+                    null,
+                    newNodeBefore)[0];
                 params[4] = hideLink;
                 
             }
@@ -5208,10 +5582,15 @@ release the author(s) of any liability related to their usage of this software.
             this.saveHideList();
         }
 
-        this.trimList = function(list, map, extra, max) {
+        this.trimList = function(list, map, extra, max, trimEnd) {
             var diff = list.length + extra - max;
+            var ids;
             if (diff > 0) {
-                var ids = list.splice(0, diff);
+                if (trimEnd) {
+                    ids = list.splice(list.length - diff, diff);
+                } else {
+                    ids = list.splice(0, diff);
+                }
                 for (var id in ids) {
                     map.remove(id);
                 }
@@ -5347,18 +5726,18 @@ release the author(s) of any liability related to their usage of this software.
                     }, function(error) {
                         switch(error.code) 
                         {
-                        case error.PERMISSION_DENIED:
-                         alert("User denied the request for Geolocation.");
-                        break;
-                        case error.POSITION_UNAVAILABLE:
-                         alert("Location information is unavailable.");
-                        break;
-                        case error.TIMEOUT:
-                         alert("The request to get user location timed out.");
-                        break;
-                        case error.UNKNOWN_ERROR:
-                         alert("An unknown error occurred.");
-                        break;
+                            case error.PERMISSION_DENIED:
+                                alert("User denied the request for Geolocation.");
+                                break;
+                            case error.POSITION_UNAVAILABLE:
+                                alert("Location information is unavailable.");
+                                break;
+                            case error.TIMEOUT:
+                                alert("The request to get user location timed out.");
+                                break;
+                            case error.UNKNOWN_ERROR:
+                                alert("An unknown error occurred.");
+                                break;
                         }
                     });
                     return;
@@ -5436,24 +5815,22 @@ release the author(s) of any liability related to their usage of this software.
                 
                 var subjEncoder = config.subjEncoder;
                 if (typeof subjEncoder == "undefined" || subjEncoder == null) {
-                    subjEncoder = function(val) {
-                        return val;
-                    }
+                    subjEncoder = craigslist.fusion.Utilities.escapeUrl;
                 }
                 var url = config.url;
                 if (bccOnly == false || bcEmail == "" || bcEmail == null) {
                     if (emailServer == "MailTo") {
-                        url += encoder.call(this, emailInfo.address) + "?";
+                        url += encoder.call(this, emailInfo.getEmailAddress()) + "?";
                     } else {
-                        url += config.to + "=" + encoder.call(this, emailInfo.address) + separator;
+                        url += config.to + "=" + encoder.call(this, emailInfo.getEmailAddress()) + separator;
                     }
                     
                     if (config.bcc != null && (bcEmail != null && bcEmail != "")) {
                         url += config.bcc + "=" + encoder.call(this, bcEmail) + separator;
                     }
                 } else {
-                     if (config.bcc != null && (bcEmail != null && bcEmail != "")) {
-                         if (emailServer == "MailTo") {
+                    if (config.bcc != null && (bcEmail != null && bcEmail != "")) {
+                        if (emailServer == "MailTo") {
                             url += encoder.call(this, bcEmail) + separator;
                         } else {
                             url += config.to + "=" + encoder.call(this, bcEmail) + separator;
@@ -5463,7 +5840,7 @@ release the author(s) of any liability related to their usage of this software.
                     }
                 }
                 if (config.subject != null) {
-                    url += config.subject + "=" + subjEncoder.call(this, emailInfo.subject) + separator;    //todo: escape needed
+                    url += config.subject + "=" + subjEncoder.call(this, emailInfo.getSubject()) + separator;    //todo: escape needed
                 }
                 if (config.body != null) {
                     url += config.body + "=" + encoder.call(this,body + "\n\n\n" + emailInfo.url) + separator;
@@ -5490,7 +5867,7 @@ release the author(s) of any liability related to their usage of this software.
             }
 
             address += "&body=" + craigslist.fusion.Utilities.escapeUrl(body + "\n\n\n" + emailInfo.url);
-            address += "&su=" + emailInfo.subject;
+            address += "&su=" + emailInfo.getSubject();
             address += "&shva=1";
 
             var bcEmail = this.preferences.getBcEmail().getValue();
@@ -5538,7 +5915,11 @@ release the author(s) of any liability related to their usage of this software.
             var templateSel = craigslist.fusion.Utilities.$("templateListId", this.browserWin.document);
             var templateName = templateSel.value;
             
-            this.openComposeEmailClient(emailInfo, templateName);
+            if (emailInfo.isReady()) {
+                this.openComposeEmailClient(emailInfo, templateName);
+            } else {
+                emailInfo.processEmail(this, this.openComposeEmailClient, emailInfo, templateName);
+            }
             
         //    }
         }
@@ -5746,7 +6127,7 @@ release the author(s) of any liability related to their usage of this software.
             label = craigslist.fusion.Utilities.addNew("label",td);
             craigslist.fusion.Utilities.newText("Template name:", label);
             td = craigslist.fusion.Utilities.addNew("td", tr);
-            input = craigslist.fusion.Utilities.addNew("input", td);
+            var input = craigslist.fusion.Utilities.addNew("input", td);
             input.setAttribute("id", "emailTemplateNameId");
             label.setAttribute("for", "emailTemplateNameId");
             input.setAttribute("size", "40");
@@ -5908,16 +6289,16 @@ release the author(s) of any liability related to their usage of this software.
         }
 
         this.confirmOnce = function(mesg, confirmName) {
-          var confirmed = craigslist.fusion.Utilities.pref_getValue(confirmName, false);
-          if (confirmed) {
+            var confirmed = craigslist.fusion.Utilities.pref_getValue(confirmName, false);
+            if (confirmed) {
+                return true;
+            }
+            var ans = confirm(mesg);
+            if (!ans) {
+                return false;
+            }
+            craigslist.fusion.Utilities.pref_setValue(confirmName, true);
             return true;
-          }
-          var ans = confirm(mesg);
-          if (!ans) {
-              return false;
-          }
-          craigslist.fusion.Utilities.pref_setValue(confirmName, true);
-          return true;
         }
         
         this.doFavExport = function(evt, favExpLink, favImpLink) {
@@ -5933,65 +6314,65 @@ release the author(s) of any liability related to their usage of this software.
             doc.close();
             */
            
-           var expTextArea = this.browserWin.document.getElementById("expTextAreaId");
-           var importExportInstruction = null;
-           if (!expTextArea) {
-               var br = craigslist.fusion.Utilities.addNewAfter("br", favImpLink);
-               br = craigslist.fusion.Utilities.addNewAfter("br", br);
-               importExportInstruction = craigslist.fusion.Utilities.addNewAfter("label", br);
-               importExportInstruction.setAttribute("id", "importExportInstruction");
-               br = craigslist.fusion.Utilities.addNewAfter("br", importExportInstruction);
-               expTextArea = craigslist.fusion.Utilities.addNewAfter("textarea", br);
-               expTextArea.setAttribute("style", "width: 600px; height: 300px;");
-               expTextArea.setAttribute("id", "expTextAreaId");
-               br = craigslist.fusion.Utilities.addNewAfter("br", expTextArea);
-               br = craigslist.fusion.Utilities.addNewAfter("br", br);
-           }
-           if (importExportInstruction == null) {
-               importExportInstruction = this.browserWin.document.getElementById("importExportInstruction");
-           }
-           craigslist.fusion.Utilities.removeAllChildren(importExportInstruction);
-           craigslist.fusion.Utilities.newText("Please copy the following text and save into a text file.", 
+            var expTextArea = this.browserWin.document.getElementById("expTextAreaId");
+            var importExportInstruction = null;
+            if (!expTextArea) {
+                var br = craigslist.fusion.Utilities.addNewAfter("br", favImpLink);
+                br = craigslist.fusion.Utilities.addNewAfter("br", br);
+                importExportInstruction = craigslist.fusion.Utilities.addNewAfter("label", br);
+                importExportInstruction.setAttribute("id", "importExportInstruction");
+                br = craigslist.fusion.Utilities.addNewAfter("br", importExportInstruction);
+                expTextArea = craigslist.fusion.Utilities.addNewAfter("textarea", br);
+                expTextArea.setAttribute("style", "width: 600px; height: 300px;");
+                expTextArea.setAttribute("id", "expTextAreaId");
+                br = craigslist.fusion.Utilities.addNewAfter("br", expTextArea);
+                br = craigslist.fusion.Utilities.addNewAfter("br", br);
+            }
+            if (importExportInstruction == null) {
+                importExportInstruction = this.browserWin.document.getElementById("importExportInstruction");
+            }
+            craigslist.fusion.Utilities.removeAllChildren(importExportInstruction);
+            craigslist.fusion.Utilities.newText("Please copy the following text and save into a text file.", 
                 importExportInstruction);
                 
-             expTextArea.value = text;
-             expTextArea.select();
+            expTextArea.value = text;
+            expTextArea.select();
         }
         
         this.showFavImport = function(evt, favExpLink, favImpLink) {
-           var expTextArea = this.browserWin.document.getElementById("expTextAreaId");
-           var importExportInstruction = null;
-           if (!expTextArea) {
-               var br = craigslist.fusion.Utilities.addNewAfter("br", favImpLink);
-               br = craigslist.fusion.Utilities.addNewAfter("br", br);
-               importExportInstruction = craigslist.fusion.Utilities.addNewAfter("label", br);
-               importExportInstruction.setAttribute("id", "importExportInstruction");
-               br = craigslist.fusion.Utilities.addNewAfter("br", importExportInstruction);
-               expTextArea = craigslist.fusion.Utilities.addNewAfter("textarea", br);
-               expTextArea.setAttribute("style", "width: 600px; height: 300px;");
-               expTextArea.setAttribute("id", "expTextAreaId");
-               br = craigslist.fusion.Utilities.addNewAfter("br", expTextArea);
-               br = craigslist.fusion.Utilities.addNewAfter("br", br);
-           }
+            var expTextArea = this.browserWin.document.getElementById("expTextAreaId");
+            var importExportInstruction = null;
+            if (!expTextArea) {
+                var br = craigslist.fusion.Utilities.addNewAfter("br", favImpLink);
+                br = craigslist.fusion.Utilities.addNewAfter("br", br);
+                importExportInstruction = craigslist.fusion.Utilities.addNewAfter("label", br);
+                importExportInstruction.setAttribute("id", "importExportInstruction");
+                br = craigslist.fusion.Utilities.addNewAfter("br", importExportInstruction);
+                expTextArea = craigslist.fusion.Utilities.addNewAfter("textarea", br);
+                expTextArea.setAttribute("style", "width: 600px; height: 300px;");
+                expTextArea.setAttribute("id", "expTextAreaId");
+                br = craigslist.fusion.Utilities.addNewAfter("br", expTextArea);
+                br = craigslist.fusion.Utilities.addNewAfter("br", br);
+            }
            
-           expTextArea.value = "";
+            expTextArea.value = "";
            
-           if (importExportInstruction == null) {
-               importExportInstruction = this.browserWin.document.getElementById("importExportInstruction");
-           }
+            if (importExportInstruction == null) {
+                importExportInstruction = this.browserWin.document.getElementById("importExportInstruction");
+            }
            
-           craigslist.fusion.Utilities.removeAllChildren(importExportInstruction);
-           craigslist.fusion.Utilities.newText("Please paste favorite export text and click on the \"Import Favorites\" button.", 
+            craigslist.fusion.Utilities.removeAllChildren(importExportInstruction);
+            craigslist.fusion.Utilities.newText("Please paste favorite export text and click on the \"Import Favorites\" button.", 
                 importExportInstruction);
            
-           var importFavButton = this.browserWin.document.getElementById("importFavButton");
-           if (!importFavButton) {
-               importFavButton = craigslist.fusion.Utilities.addNewAfter("input", expTextArea);
-               importFavButton.setAttribute("id", "importFavButton");
-               importFavButton.setAttribute("type", "button");
-               importFavButton.setAttribute("value", "Import Favorites");
-               importFavButton.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.doFavImport, expTextArea, ""), false);
-           }
+            var importFavButton = this.browserWin.document.getElementById("importFavButton");
+            if (!importFavButton) {
+                importFavButton = craigslist.fusion.Utilities.addNewAfter("input", expTextArea);
+                importFavButton.setAttribute("id", "importFavButton");
+                importFavButton.setAttribute("type", "button");
+                importFavButton.setAttribute("value", "Import Favorites");
+                importFavButton.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.doFavImport, expTextArea, ""), false);
+            }
         }
         
         this.doFavImport = function(evt, expTextArea, param2) {
@@ -6018,7 +6399,7 @@ release the author(s) of any liability related to their usage of this software.
                 this.saveFavList();
                 this.showFavorites(evt, param1, param2);
             } catch (err) {
-               craigslist.fusion.Utilities.notify("Failed to remove expired favorites.");
+                craigslist.fusion.Utilities.notify("Failed to remove expired favorites.");
             }
         }
         
@@ -6032,6 +6413,171 @@ release the author(s) of any liability related to their usage of this software.
                 this.showFavorites(evt, param1, param2);
             } catch (err) {
                 craigslist.fusion.Utilities.notify("Failed to remove all favorites.");
+            }
+        }
+        
+        this.deleteBookmark = function(evt, url, param2) {
+            try {
+                if (evt) {
+                    evt.preventDefault();
+                    evt.stopPropagation();
+                }
+                var bm;
+                for (var i = this.bookmarkList.length - 1; i > 0; i--) {
+                    bm = this.bookmarkList[i];
+                    if (bm.url == url) {
+                        this.bookmarkList.splice(i, 1);
+                        this.bookmarkMap.remove(url);
+                    }
+                }
+                this.saveBookmarkList();
+                this.showBookmarkWindow();
+                
+            } catch (error) {
+                craigslist.fusion.Utilities.notify("Failed to delete bookmark: ", error);
+            }
+        }
+        
+        this.addBookmark = function(evt, auto, param2) {
+            try {
+                if (evt) {
+                    evt.preventDefault();
+                    evt.stopPropagation();
+                }
+                
+                var url = this.browserWin.location.href;
+                var title = this.browserWin.document.title;
+                if (typeof title == "undefined" || title == null) {
+                    title = url;
+                }
+                title = "" + title;
+                //will never add book mark due to auto book mark on each page
+                //if (this.bookmarkMap.contains(url)) {
+                //    if (!auto) {
+                //        return;
+                //    }
+                //}
+                
+                if (auto) {
+                    if (this.bookmarkList.length > 0) {
+                        var firstBookmark = this.bookmarkList[0];
+                        if (firstBookmark.auto) {
+                            this.bookmarkList.splice(0, 1);
+                            this.bookmarkMap.remove(firstBookmark.url);
+                        }
+                    }
+                } else {
+                    auto = false;
+                    var bm;
+                    for (var i = this.bookmarkList.length - 1; i > 0; i--) {
+                        bm = this.bookmarkList[i];
+                        if (bm.url == url) {
+                            this.bookmarkList.splice(i, 1);
+                            this.bookmarkMap.remove(url);
+                        }
+                    }
+                }
+                
+                this.trimList(this.bookmarkList, this.bookmarkMap, 1, this.MAX_BOOKMARK_ENTRIES, true);
+                this.bookmarkMap.put(url, ".");
+                var bookmark = {};
+                var cl = " - craigslist";
+                title = title.replace(cl, "");
+                title = title.replace("classifieds", ""); 
+                
+                bookmark.subject = title;
+                bookmark.url = url;
+                bookmark.auto = auto;
+                if (auto || this.bookmarkList.length == 0) {
+                    this.bookmarkList.splice(0, 0, bookmark);
+                } else {
+                    this.bookmarkList.splice(1, 0, bookmark);
+                }
+                this.saveBookmarkList();
+                if (!auto) {
+                    alert("Done adding \"" + title + "\"");
+                }
+            //this.showBookmarks(contentArea, false, doc, "bookmarks");
+
+            } catch (error) {
+                craigslist.fusion.Utilities.notify("Failed to add bookmark: ", error);
+            }
+        }
+        
+        this.removeAllBookmarks = function(evt, param1, param2) {
+            var answer = confirm("Are you sure you want to delete all bookmarks?");
+            if (!answer) return;
+            try {
+                //todo: should clear auto or not?
+                this.bookmarkList = [];
+                this.bookmarkMap.clearAll();
+                //add book mark again for auto?
+                
+                this.saveBookmarkList();
+            //this.showBookmarks(contentArea, false, doc, "bookmarks");
+            } catch (err) {
+                craigslist.fusion.Utilities.notify("Failed to remove all bookmarks.");
+            }
+        }
+        
+        this.showBookmarkWindow = function(evt, param1, param2) {
+            try {
+                if (evt) {
+                    evt.preventDefault();
+                    evt.stopPropagation();
+                }
+                this.bookmarkWindow.setVisible(true);
+                this.bookmarkWindow.requestFocus();
+                
+                var contentArea = this.bookmarkWindow.contentArea;
+                
+                craigslist.fusion.Utilities.removeAllChildren(contentArea);
+                
+                //add a list
+                if (this.bookmarkList.length == 0) {
+                    return;
+                }
+                
+                var bm;
+                var bmDiv;
+                var link;
+                
+                var bookmarkDiv = craigslist.fusion.Utilities.addNew("div", contentArea);
+                for (var i = 0; i < this.bookmarkList.length; i++) {
+                    bm = this.bookmarkList[i];
+                    bmDiv = craigslist.fusion.Utilities.addNew("div", bookmarkDiv);
+                    
+                    link = craigslist.fusion.Utilities.addNew("a", bmDiv);
+                    //link.setAttribute("style", "color: red;");
+                    //craigslist.fusion.Utilities.newText("x", link);
+                    var img = craigslist.fusion.Utilities.addNew("img", link);
+                    img.setAttribute("src", craigslist.fusion.Resources.hideIcon);
+                    link.href = "javascript:void()";
+                    link.addEventListener("click", craigslist.fusion.Utilities.runWith(this, function(evt, url, param2) {
+                        if (evt) {
+                            evt.preventDefault();
+                            evt.stopPropagation();
+                        }
+                        
+                        this.deleteBookmark(evt, url, null);
+                    }, bm.url, ""), false);
+                    
+                    craigslist.fusion.Utilities.newText(" - ", bmDiv);
+                    
+                    link = craigslist.fusion.Utilities.addNew("a", bmDiv);
+                    craigslist.fusion.Utilities.newText(bm.subject, link);
+                    link.href = "javascript:void()";
+                    link.addEventListener("click", craigslist.fusion.Utilities.runWith(this, function(evt, url, param2) {
+                        if (evt) {
+                            evt.preventDefault();
+                            evt.stopPropagation();
+                        }
+                        
+                        browserWin.location.href = url;
+                    }, bm.url, ""), false);
+                }
+            } catch (error) {
+                craigslist.fusion.Utilities.notify("Failed to render favorite: ", error);
             }
         }
         
@@ -6067,57 +6613,57 @@ release the author(s) of any liability related to their usage of this software.
             //favPrintWin.print();
             */
            
-           var body = craigslist.fusion.Utilities.findFirstItem("body", null, this.browserWin.document);
+            var body = craigslist.fusion.Utilities.findFirstItem("body", null, this.browserWin.document);
            
-           var docNodes = body.childNodes;
-           var childNodes = new Array();
-           childNodes.push.apply(childNodes, docNodes);
-           var i;
+            var docNodes = body.childNodes;
+            var childNodes = new Array();
+            childNodes.push.apply(childNodes, docNodes);
+            var i;
            
-           for (i = 0; i < childNodes.length; i++) {
-               craigslist.fusion.Utilities.addClass(childNodes[i], "hideClass");
-           }
-           craigslist.fusion.Utilities.removeClass(this.browserWin.document.body, "hideClass");
+            for (i = 0; i < childNodes.length; i++) {
+                craigslist.fusion.Utilities.addClass(childNodes[i], "hideClass");
+            }
+            craigslist.fusion.Utilities.removeClass(this.browserWin.document.body, "hideClass");
            
-           var printButton = craigslist.fusion.Utilities.addNew("input", this.browserWin.document.body);
-           printButton.setAttribute("value", "Print");
-           printButton.setAttribute("type", "button");
-           craigslist.fusion.Utilities.addClass(printButton, "mediaHideWhenPrint");
+            var printButton = craigslist.fusion.Utilities.addNew("input", this.browserWin.document.body);
+            printButton.setAttribute("value", "Print");
+            printButton.setAttribute("type", "button");
+            craigslist.fusion.Utilities.addClass(printButton, "mediaHideWhenPrint");
            
-           var cancelButton = craigslist.fusion.Utilities.addNew("input", this.browserWin.document.body);
-           cancelButton.setAttribute("value", "Cancel");
-           cancelButton.setAttribute("type", "button");
-           craigslist.fusion.Utilities.addClass(cancelButton, "mediaHideWhenPrint");
+            var cancelButton = craigslist.fusion.Utilities.addNew("input", this.browserWin.document.body);
+            cancelButton.setAttribute("value", "Cancel");
+            cancelButton.setAttribute("type", "button");
+            craigslist.fusion.Utilities.addClass(cancelButton, "mediaHideWhenPrint");
            
-           var contentArea = craigslist.fusion.Utilities.addNew("div", this.browserWin.document.body);
-           contentArea.setAttribute("style", "width: 100%;");
-           this.renderFavorites(contentArea, true, this.browserWin.document, "favorite_print");
+            var contentArea = craigslist.fusion.Utilities.addNew("div", this.browserWin.document.body);
+            contentArea.setAttribute("style", "width: 100%;");
+            this.renderFavorites(contentArea, true, this.browserWin.document, "favorite_print");
            
-           printButton.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.printPage, [printButton, cancelButton, contentArea, childNodes], ""), false);
-           cancelButton.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.closePrintPage, [printButton, cancelButton, contentArea, childNodes], ""), false);
+            printButton.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.printPage, [printButton, cancelButton, contentArea, childNodes], ""), false);
+            cancelButton.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.closePrintPage, [printButton, cancelButton, contentArea, childNodes], ""), false);
            
         }
         
         this.printPage = function(evt, param1, param2) {
-           this.browserWin.print();
-           this.closePrintPage(evt, param1, param2);
+            this.browserWin.print();
+            this.closePrintPage(evt, param1, param2);
         }
         
         this.closePrintPage = function(evt, param1, param2) {
-           var printButton = param1[0];
-           var contentArea = param1[1];
+            var printButton = param1[0];
+            var contentArea = param1[1];
 
-           var cancelButton = param1[2];
+            var cancelButton = param1[2];
            
-           craigslist.fusion.Utilities.removeNode(printButton);
-           craigslist.fusion.Utilities.removeNode(cancelButton);
-           craigslist.fusion.Utilities.removeNode(contentArea);
+            craigslist.fusion.Utilities.removeNode(printButton);
+            craigslist.fusion.Utilities.removeNode(cancelButton);
+            craigslist.fusion.Utilities.removeNode(contentArea);
            
-           var childNodes = param1[3];
-           var i;
-           for (i = 0; i < childNodes.length; i++) {
-               craigslist.fusion.Utilities.removeClass(childNodes[i], "hideClass");
-           }
+            var childNodes = param1[3];
+            var i;
+            for (i = 0; i < childNodes.length; i++) {
+                craigslist.fusion.Utilities.removeClass(childNodes[i], "hideClass");
+            }
         }
         
         this.renderFavorites = function(contentArea, printView, doc, renderType) {
@@ -6126,30 +6672,35 @@ release the author(s) of any liability related to their usage of this software.
 
                 if (!printView) {
                     var printFavorites = craigslist.fusion.Utilities.addNew("a", contentArea);
+                    printFavorites.setAttribute("style", "background-color: #DFDFDF !important;");
                     craigslist.fusion.Utilities.newText("Print", printFavorites);
                     printFavorites.href = "javascript:void(0)";
                     printFavorites.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.showPrintFavorites, "", ""), false);
                     craigslist.fusion.Utilities.newText("   ", contentArea);
                     
                     var removeAllLinks = craigslist.fusion.Utilities.addNew("a", contentArea);
+                    removeAllLinks.setAttribute("style", "background-color: #DFDFDF !important;");
                     craigslist.fusion.Utilities.newText("Remove All", removeAllLinks);
                     removeAllLinks.href = "javascript:void(0)";
                     removeAllLinks.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.removeAllFavorites, "", ""), false);
                     craigslist.fusion.Utilities.newText("   ", contentArea);
 
                     var removeExpiredLinks = craigslist.fusion.Utilities.addNew("a", contentArea);
+                    removeExpiredLinks.setAttribute("style", "background-color: #DFDFDF !important;");
                     craigslist.fusion.Utilities.newText("Remove Expires", removeExpiredLinks);
                     removeExpiredLinks.href = "javascript:void(0)";
                     removeExpiredLinks.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.removeExpiredFavorites, "", ""), false);
                     craigslist.fusion.Utilities.newText("   ", contentArea);
 
                     var favExpLink = craigslist.fusion.Utilities.addNew("a", contentArea);
+                    favExpLink.setAttribute("style", "background-color: #DFDFDF !important;");
                     craigslist.fusion.Utilities.newText("Export", favExpLink);
                     favExpLink.href = "javascript:void(0)";
 
                     craigslist.fusion.Utilities.newText("   ", contentArea);
 
                     var favImpLink = craigslist.fusion.Utilities.addNew("a", contentArea);
+                    favImpLink.setAttribute("style", "background-color: #DFDFDF !important;");
                     craigslist.fusion.Utilities.newText("Import", favImpLink);
                     favImpLink.href = "javascript:void(0)";
                     favImpLink.addEventListener("click", craigslist.fusion.Utilities.runWith(this, this.showFavImport, favExpLink, favImpLink), false);
@@ -6160,25 +6711,29 @@ release the author(s) of any liability related to their usage of this software.
                     contentArea.appendChild(doc.createElement("br"));
                 }
                 
-                var table = craigslist.fusion.Utilities.addNew("table", contentArea);
-                table.setAttribute("style", "width: 98%; border: 0px;");
-                var tr;
+                var div = craigslist.fusion.Utilities.addNew("div", contentArea);
+                
+                craigslist.fusion.Utilities.addClass(div, "favoriteArea");
+                div.setAttribute("style", "width: 98%; border: 0px;");
+                if (printView) {
+                    div.setAttribute("style", "width: 800px !important; border: 0px;");
+                }
+                var entry;
                 for (var i = this.favList.length - 1; i >= 0; i--) {
                     try {
-                        tr = craigslist.fusion.Utilities.addNew("tr", table);
-                        var td =  craigslist.fusion.Utilities.addNew("td", tr);
-                        var link = craigslist.fusion.Utilities.addNew("a", td);
+                        entry = craigslist.fusion.Utilities.addNew("div", div);
+                        var link = craigslist.fusion.Utilities.addNew("a", entry);
                         link.href = this.favList[i].url;
-                        craigslist.fusion.Utilities.newText(unescape(this.favList[i].subject), link);
+                        craigslist.fusion.Utilities.newText(craigslist.fusion.Utilities.parseEntity(this.favList[i].subject), link);
                         try {
-                            this.preProcessDetails(link, [td, renderType, this.favList[i].postId]);
+                            this.preProcessDetails(link, [entry, renderType, this.favList[i].postId]);
                             var req = craigslist.fusion.AjaxRequestFactory.getRequest({
                                 method: "GET",
                                 url: link.href,
                                 headers: {
                                     "Accept" : "text/html,text/xml,text/plain"
                                 },
-                                contentHandler: craigslist.fusion.Utilities.runWith(this, this.processDetails, link, [td, renderType, this.favList[i].postId, this.setFavObsolete, this.favList[i]]),
+                                contentHandler: craigslist.fusion.Utilities.runWith(this, this.processDetails, link, [entry, renderType, this.favList[i].postId, this.setFavObsolete, this.favList[i]]),
                                 data : null
                             });
                             req.send();
@@ -6193,7 +6748,7 @@ release the author(s) of any liability related to their usage of this software.
                 contentArea.appendChild(doc.createElement("br"));
                 contentArea.appendChild(doc.createElement("br"));
 
-                //this.favWindow.setBounds(50, 50, 300, 600);
+            //this.favWindow.setBounds(50, 50, 300, 600);
 
             } catch (error) {
                 craigslist.fusion.Utilities.notify("Failed to render favorite: " , error);
@@ -6204,8 +6759,9 @@ release the author(s) of any liability related to their usage of this software.
             if (typeof text == "undefined" || 
                 text == null || 
                 text.indexOf("This posting has expired") >= 0 || 
-                text.indexOf("This posting has been deleted") >= 0 
-            ) {
+                text.indexOf("This posting has been deleted") >= 0 ||
+                text.indexOf("This posting has been flagged for removal") >= 0
+                ) {
                 fav.obsolete = true;
             } else {
                 fav.obsolete = false;
@@ -6229,8 +6785,8 @@ release the author(s) of any liability related to their usage of this software.
                 this.preferenceWindow.requestFocus();
 
                 var contentArea = this.preferenceWindow.contentArea;
-    //            contentArea.id = "preferenceContentArea";
-    //            contentArea.className = "preferenceContentArea";
+                //            contentArea.id = "preferenceContentArea";
+                //            contentArea.className = "preferenceContentArea";
 
                 contentArea.appendChild(doc.createElement("br"));
                 contentArea.appendChild(doc.createElement("br"));
@@ -6244,10 +6800,13 @@ release the author(s) of any liability related to their usage of this software.
                             "width: 100%; left: 3px;",
                             "width: 100%; left: 3px;",
                             "display: block;"
-                        );
+                            );
+                        
+                        //entryClass
                         tr = craigslist.fusion.Utilities.addNew("tr", table);
                         this.preferences.prefList[i].render(tr, doc);
-    //                    contentArea.appendChild(doc.createElement("br"));
+                        tr.className = "entryClass";
+                    //                    contentArea.appendChild(doc.createElement("br"));
                     } catch (err) {
                         craigslist.fusion.Utilities.notify("Failed to render preference for : " + this.preferences.prefList[i].getName(), err);
                     }
@@ -6302,6 +6861,95 @@ release the author(s) of any liability related to their usage of this software.
 
 
         this.initialize(browserWin);
+    }
+
+    craigslist.fusion.EmailInfo = function(sourceUrl) {
+        this.ready = false;
+        
+        this.isReady = function() {
+            return this.ready;
+        }
+
+        this.getSubject = function() {
+            return craigslist.fusion.Utilities.parseEntity(this.subject);
+        }
+
+        this.getEmailAddress = function() {
+            if (!this.ready) {
+                this.getInformation();
+            }
+            return this.emailAddress;
+        }
+        
+        this.processEmail = function(obj, func, param1, param2) {
+            try {
+                var req = craigslist.fusion.AjaxRequestFactory.getRequest({
+                    method: "GET",
+                    url: sourceUrl,	//relative URL
+                    headers: {
+                        "Accept" : "text/html,text/xml,text/plain"
+                    },
+                    contentHandler: craigslist.fusion.Utilities.runWith(this, this.postActionHandler, obj, [func, param1, param2]),
+                    data : null,
+                    synchronous: false
+                });
+                req.send();
+            } catch (err) {
+                craigslist.fusion.Utilities.notify("error: ", err);
+            }
+        }
+        
+        this.postActionHandler = function(response, obj, params) {
+            this.parseInfo(response);
+            var func = params[0];
+            var param1 = params[1];
+            var param2 = params[2];
+            if (func) {
+                func.apply(obj, [param1, param2]);
+            }
+        }
+
+        this.getInformation = function() {
+            try {
+                var req = craigslist.fusion.AjaxRequestFactory.getRequest({
+                    method: "GET",
+                    url: sourceUrl,	//relative URL
+                    headers: {
+                        "Accept" : "text/html,text/xml,text/plain"
+                    },
+                    contentHandler: craigslist.fusion.Utilities.runWith(this, this.parseInfo, null, []),
+                    data : null,
+                    synchronous: true
+                });
+                req.send();
+            } catch (err) {
+                craigslist.fusion.Utilities.notify("error: ", err);
+            }
+
+        }
+
+        this.parseInfo = function(response, param1, param2) {
+            //craigslist.fusion.Utilities.notify(contentText);
+            var mailToRegx = "<a href\\=\\\"mailto:([\\s\\S]*?)\\?";
+            //var subjectRegx = "\\?subject\\=([\\s\\S]*?)&amp;";
+
+            var addressRegxObj = new RegExp(mailToRegx, "g");
+            //var subjectRegxObj = new RegExp(subjectRegx, "g");
+          
+            var contentText = response.responseText;
+          
+            var res = addressRegxObj.exec(contentText);
+            if (res != null && res.length > 1) {
+                this.emailAddress = unescape(res[1]);
+            }
+
+            //res = subjectRegxObj.exec(contentText);
+            //if (res != null && res.length > 1) {
+            //    this.subject = unescape(res[1]);
+            //}
+
+            this.ready = true;
+        }
     }
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -6523,8 +7171,8 @@ release the author(s) of any liability related to their usage of this software.
         }
         
         var elapsedFormats = ["Show all", "Show most 2 groups", "Show 1 group"];
-        component = new craigslist.fusion.ui.Select("elapsedTimeFormat", "Elapsed Time Format:", [3,2,1], elapsedFormats );
-        var elapsedTimeFormat = this.prefList[this.prefList.length] = new craigslist.fusion.Preference(null, component, 3);
+        component = new craigslist.fusion.ui.Select("elapsedTimeFormat2", "Elapsed Time Format:", [3,2,1], elapsedFormats );
+        var elapsedTimeFormat = this.prefList[this.prefList.length] = new craigslist.fusion.Preference(null, component, 2);
         this.getElapsedTimeFormat = function() {
             return elapsedTimeFormat;
         }
@@ -6583,80 +7231,81 @@ release the author(s) of any liability related to their usage of this software.
             return enableAutoHideForm;
         }
         
+        
         var emailServers = [
-            {
-                "name" : "Googlemail",
-                "display": "Google mail",
-                "url": "https://mail.google.com/mail/?view=cm&fs=1&tf=1&source=mailto&",
-                "to": "to",
-                "cc": "cc",
-                "bcc": "bcc",
-                "subject": "su",
-                "body": "body"
+        {
+            "name" : "Googlemail",
+            "display": "Google mail",
+            "url": "https://mail.google.com/mail/?view=cm&fs=1&tf=1&source=mailto&",
+            "to": "to",
+            "cc": "cc",
+            "bcc": "bcc",
+            "subject": "su",
+            "body": "body"
+        },
+        {
+            "name" : "MailTo",
+            "display": "MailTo (browser/system)",
+            "url": "mailto:",  //todo here
+            "to": "to",
+            "cc": "cc",
+            "bcc": "bcc",
+            "subject": "subject",
+            "body": "body",
+            "encoder": function(val) {
+                //val = val.replace(/\n/gi, "&lt;BR&gt;", "gim");
+                val = craigslist.fusion.Utilities.escapeUrl(val);
+                //val = encodeURIComponent(val);
+                return val;
             },
-            {
-                "name" : "MailTo",
-                "display": "MailTo (browser/system)",
-                "url": "mailto:",  //todo here
-                "to": "to",
-                "cc": "cc",
-                "bcc": "bcc",
-                "subject": "subject",
-                "body": "body",
-                "encoder": function(val) {
-                    //val = val.replace(/\n/gi, "&lt;BR&gt;", "gim");
-                    val = craigslist.fusion.Utilities.escapeUrl(val);
-                    //val = encodeURIComponent(val);
-                    return val;
-                },
-                "subjEncoder": function(val) {
-                    //return craigslist.fusion.Utilities.escapeUrl(val);
-                    return val;
-                }
-            },
-            {
-                "name" : "Yahoo",
-                "display": "Yahoo (beta)",
-                "url" : "http://compose.mail.yahoo.com/?",
-                "to": "To",
-                "cc": "Cc",
-                "bcc": "Bcc",
-                "subject": "Subj",
-                "body": "Body",
-                "encoder": function(val) {
-                    //val = val.replace(/\n/gi, "&lt;BR&gt;", "gim");
-                    val = craigslist.fusion.Utilities.escapeUrl(val);
-                    //val = encodeURIComponent(val);
-                    val = craigslist.fusion.Utilities.escapeUrl(val);
-                    return val;
-                },
-                "rand": "rand",
-                "subjEncoder": function(val) {
-                    return craigslist.fusion.Utilities.escapeUrl(val);
-                }
-            },
-            {
-                "name" : "Hotmail",
-                "display": "Hotmail (beta)",
-                "url": "https://mail.live.com/default.aspx?rru=compose&",
-                "to": "to",
-                "cc": "cc",
-                "bcc": null,    //todo: research needed
-                "subject": "subject",
-                "body": "body"
-            },
-            {
-                "name" : "Fastmail",
-                "display": "Fastmail (alpha)",
-                "url": "https://www.fastmail.fm/action/compose/?",
-                "to": "to",
-                "cc": "cc",
-                "bcc": "bcc",
-                "subject": "subject",
-                "body": "body"
+            "subjEncoder": function(val) {
+                //return craigslist.fusion.Utilities.escapeUrl(val);
+                return val;
             }
+        },
+        {
+            "name" : "Yahoo",
+            "display": "Yahoo (beta)",
+            "url" : "http://compose.mail.yahoo.com/?",
+            "to": "To",
+            "cc": "Cc",
+            "bcc": "Bcc",
+            "subject": "Subj",
+            "body": "Body",
+            "encoder": function(val) {
+                //val = val.replace(/\n/gi, "&lt;BR&gt;", "gim");
+                val = craigslist.fusion.Utilities.escapeUrl(val);
+                //val = encodeURIComponent(val);
+                val = craigslist.fusion.Utilities.escapeUrl(val);
+                return val;
+            },
+            "rand": "rand",
+            "subjEncoder": function(val) {
+                return craigslist.fusion.Utilities.escapeUrl(val);
+            }
+        },
+        {
+            "name" : "Hotmail",
+            "display": "Hotmail (beta)",
+            "url": "https://mail.live.com/default.aspx?rru=compose&",
+            "to": "to",
+            "cc": "cc",
+            "bcc": null,    //todo: research needed
+            "subject": "subject",
+            "body": "body"
+        },
+        {
+            "name" : "Fastmail",
+            "display": "Fastmail (alpha)",
+            "url": "https://www.fastmail.fm/action/compose/?",
+            "to": "to",
+            "cc": "cc",
+            "bcc": "bcc",
+            "subject": "subject",
+            "body": "body"
+        }
             
-            /*
+        /*
              *
              *
             ,
@@ -6711,11 +7360,11 @@ release the author(s) of any liability related to their usage of this software.
         }
         */
         
-//        component = new craigslist.fusion.ui.CheckBox("showPostDetailsButton", "Show post details button:");
-//        var showPostDetailsButton = this.prefList[this.prefList.length] = new craigslist.fusion.Preference(null, component, true);
-//        this.getShowPostDetailsButton = function() {
-//            return showPostDetailsButton;
-//        }
+        //        component = new craigslist.fusion.ui.CheckBox("showPostDetailsButton", "Show post details button:");
+        //        var showPostDetailsButton = this.prefList[this.prefList.length] = new craigslist.fusion.Preference(null, component, true);
+        //        this.getShowPostDetailsButton = function() {
+        //            return showPostDetailsButton;
+        //        }
 
         this.getEmailServers = function() {
             return emailServers;
@@ -6729,7 +7378,40 @@ release the author(s) of any liability related to their usage of this software.
             }
             return null;
         }
+
+        component = new craigslist.fusion.ui.TextField("entryGradientColor", "Entry Background Gradient Color:");
+        var entryGradientColor = this.prefList[this.prefList.length] = new craigslist.fusion.Preference(null, component, "#DFE0DE");
+        this.getEntryGradientColor = function() {
+            return entryGradientColor;
+        }
+
+        component = new craigslist.fusion.ui.CheckBox("showImagesInDetails", "Show Images In Details:");
+        var showImagesInDetails = this.prefList[this.prefList.length] = new craigslist.fusion.Preference(null, component, true);
+        this.getShowImagesInDetails = function() {
+            return showImagesInDetails;
+        }
         
+        var imgesPerRowOptions = new Array();
+        for (var i = 1; i <= 4; i += 1) {
+            imgesPerRowOptions[imgesPerRowOptions.length] = i;
+        }
+        component = new craigslist.fusion.ui.Select("embedImagesPerRow", "Number Embed Images Per Row:", imgesPerRowOptions, null);
+        var embedImagesPerRow = this.prefList[this.prefList.length] = new craigslist.fusion.Preference(null, component, 1);
+        this.getEmbedImagesPerRow = function() {
+            return embedImagesPerRow;
+        }
+
+        
+        var imageHeightOptions = new Array();
+        for (var i = 100; i <= 800; i += 50) {
+            imageHeightOptions[imageHeightOptions.length] = i;
+        }
+        component = new craigslist.fusion.ui.Select("embedImageHeight", "Embed Image Height:", imageHeightOptions, null);
+        var embedImageHeight = this.prefList[this.prefList.length] = new craigslist.fusion.Preference(null, component, 500);
+        this.getEmbedImageHeight = function() {
+            return embedImageHeight;
+        }
+
         this.get = function(keyName) {
             var preference = null;
             for (var i = 0; i < this.prefList.length; i++) {
@@ -6755,9 +7437,9 @@ release the author(s) of any liability related to their usage of this software.
         }
 
         this.setStyle = function(fieldStyle, labelStyle, containerStyle) {
-            component.setFieldStyle(fieldStyle);
-            component.setLabelStyle(labelStyle);
-            component.setContainerStyle(containerStyle);
+            if (typeof fieldStyle != "undefined" && fieldStyle != null) component.setFieldStyle(fieldStyle);
+            if (typeof labelStyle != "undefined" && labelStyle != null) component.setLabelStyle(labelStyle);
+            if (typeof containerStyle != "undefined" && containerStyle != null) component.setContainerStyle(containerStyle);
         }
 
         this.getValue = function() {
@@ -7083,13 +7765,13 @@ release the author(s) of any liability related to their usage of this software.
             if (this.getContainerStyle() != null) {
                 element.setAttribute("style", this.getContainerStyle());
             }
-    //        element.className = "componentContainer";
-    //        labelSpan.className = "componentLabel";
+            //        element.className = "componentContainer";
+            //        labelSpan.className = "componentLabel";
             var label = this.renderLabel(element);
             this.renderField(element);
 
-    //        this.formField.className = "component";
-    //        label.htmlFor  = this.getId();
+            //        this.formField.className = "component";
+            //        label.htmlFor  = this.getId();
             return element;
         }
 
@@ -7128,19 +7810,19 @@ release the author(s) of any liability related to their usage of this software.
 
     craigslist.fusion.ui.TextField = function(id, label) {
         craigslistFusion.initParent(this, craigslist.fusion.ui.Component, id, label);
-    //    this.render = function(parent) {
-    //        var element = craigslist.fusion.Utilities.addNew("div", parent);
-    //        var formField = craigslist.fusion.Utilities.addNew("input", element);
-    //        this.setField(formField);
-    //        formField.id = this.getId();
-    //        formField.type = "text";
-    //        formField.name = this.getId();
-    //        if (this.getFieldStyle() != null) {
-    //            element.setAttribute("style", this.getFieldStyle());
-    //            formField.setAttribute("style", this.getFieldStyle());
-    //        }
-    //        return element;
-    //    }
+        //    this.render = function(parent) {
+        //        var element = craigslist.fusion.Utilities.addNew("div", parent);
+        //        var formField = craigslist.fusion.Utilities.addNew("input", element);
+        //        this.setField(formField);
+        //        formField.id = this.getId();
+        //        formField.type = "text";
+        //        formField.name = this.getId();
+        //        if (this.getFieldStyle() != null) {
+        //            element.setAttribute("style", this.getFieldStyle());
+        //            formField.setAttribute("style", this.getFieldStyle());
+        //        }
+        //        return element;
+        //    }
         this.render = function(parent) {
             var element = craigslist.fusion.Utilities.addNew("div", parent);
             if (this.getContainerStyle() != null) {
@@ -7406,18 +8088,18 @@ release the author(s) of any liability related to their usage of this software.
                 var attrExpectedVal = attributes[attr];
                 var attrVal = element.getAttribute(attr);
                 if (attr != "class") {
-                   if (attrExpectedVal != attrVal) {
-                      found = false;
-                      break;
+                    if (attrExpectedVal != attrVal) {
+                        found = false;
+                        break;
                     }
-                  } else if (attr == "class") {
-                  var regExp = new RegExp("(^|\\s)" + attrExpectedVal + "(\\s|$)");
-                  if(!regExp.test(attrVal)){
-                    //if (attrVal == null || attrVal.indexOf(attrExpectedVal) < 0) {
-                    found = false;
-                    break;
-                  }
-               } 
+                } else if (attr == "class") {
+                    var regExp = new RegExp("(^|\\s)" + attrExpectedVal + "(\\s|$)");
+                    if(!regExp.test(attrVal)){
+                        //if (attrVal == null || attrVal.indexOf(attrExpectedVal) < 0) {
+                        found = false;
+                        break;
+                    }
+                } 
             }
             if (found) {
                 return element;
@@ -7517,7 +8199,9 @@ release the author(s) of any liability related to their usage of this software.
         if (parent == null) {
             return ;
         }
-        while ( parent.hasChildNodes() ) {parent.removeChild(parent.firstChild);}
+        while ( parent.hasChildNodes() ) {
+            parent.removeChild(parent.firstChild);
+        }
     }
 
     craigslist.fusion.Utilities.removeNodes = function(parent, nodes) {
@@ -7528,7 +8212,7 @@ release the author(s) of any liability related to their usage of this software.
             try {
                 parent.removeChild(nodes[i]);
             } catch (err) {
-                //ignore
+            //ignore
             }
         }
     }
@@ -7650,7 +8334,7 @@ release the author(s) of any liability related to their usage of this software.
         } else if (craigslist.fusion.Utilities.prefManager) {
             try {
                 val = craigslist.fusion.Utilities.prefManager.getCharPref("extensions.craigslist.fusion." + key);
-                if (val == null) {
+                if (typeof val == "undefined" || val == null) {
                     return defVal;
                 } else {
                     if (val == "true") return true;
@@ -7662,23 +8346,23 @@ release the author(s) of any liability related to their usage of this software.
             }
         } else {
             //if (navigator.userAgent.toLowerCase().indexOf('chrome') > -1 || window.opera) {
-                if ((typeof localStorage) == "undefined" ) {
-                    craigslist.fusion.Utilities.notify("HTML5 local storage not supported.");
-                } else {
-                    try {
-                        val = localStorage.getItem("extensions.craigslist.fusion." + key);
-                        if (val == null) {
-                            return defVal;
-                        } else {
-                            if (val == "true") return true;
-                            if (val == "false") return false;
-                            return val;
-                        }
-                    } catch (e) {
+            if ((typeof localStorage) == "undefined" ) {
+                craigslist.fusion.Utilities.notify("HTML5 local storage not supported.");
+            } else {
+                try {
+                    val = localStorage.getItem("extensions.craigslist.fusion." + key);
+                    if (typeof val == "undefined" || val == null) {
                         return defVal;
+                    } else {
+                        if (val == "true") return true;
+                        if (val == "false") return false;
+                        return val;
                     }
+                } catch (e) {
+                    return defVal;
                 }
-            //}
+            }
+        //}
 
         }
         return defVal;
@@ -7709,10 +8393,10 @@ release the author(s) of any liability related to their usage of this software.
                 }
             }
         } catch (err) {
-            //craigslist.fusion.Utilities.notify("Local storage is: " + localStorage);
-            //craigslist.fusion.Utilities.notify("Error setting preference for : " + key + ", and value: " + value, err);
-            //if (err == QUOTA_EXCEEDED_ERR) {
-            //}
+        //craigslist.fusion.Utilities.notify("Local storage is: " + localStorage);
+        //craigslist.fusion.Utilities.notify("Error setting preference for : " + key + ", and value: " + value, err);
+        //if (err == QUOTA_EXCEEDED_ERR) {
+        //}
         }
     }
 
@@ -7771,7 +8455,7 @@ release the author(s) of any liability related to their usage of this software.
             browserWin.pageYOffset ? browserWin.pageYOffset : 0,
             browserWin.document.documentElement ? browserWin.document.documentElement.scrollTop : 0,
             browserWin.document.body ? browserWin.document.body.scrollTop : 0
-        );
+            );
     }
 
     craigslist.fusion.Utilities.filterResults = function(n_win, n_docel, n_body) {
@@ -7782,42 +8466,114 @@ release the author(s) of any liability related to their usage of this software.
     }
 
     craigslist.fusion.Utilities.allowedNewTags = {
-        "img": function(doc) {return doc.createElement("img")},
-        "div": function(doc) {return doc.createElement("div")},
-        "a": function(doc) {return doc.createElement("a")},
-        "br": function(doc) {return doc.createElement("br")},
-        "table": function(doc) {return doc.createElement("table")},
-        "tr": function(doc) {return doc.createElement("tr")},
-        "td": function(doc) {return doc.createElement("td")},
-        "label": function(doc) {return doc.createElement("label")},
-        "select": function(doc) {return doc.createElement("select")},
-        "textarea": function(doc) {return doc.createElement("textarea")},
-        "input": function(doc) {return doc.createElement("input")},
-        "option": function(doc) {return doc.createElement("option")},
-        "fieldset": function(doc) {return doc.createElement("fieldset")},
-        "legend": function(doc) {return doc.createElement("legend")},
-        "iframe": function(doc) {return doc.createElement("iframe")},
-        "tbody": function(doc) {return doc.createElement("tbody")},
-        "li": function(doc) {return doc.createElement("li")},
-        "ul": function(doc) {return doc.createElement("ul")},
-        "ol": function(doc) {return doc.createElement("ol")},
-        "font": function(doc) {return doc.createElement("font")},
-        "strong": function(doc) {return doc.createElement("strong")},
-        "p": function(doc) {return doc.createElement("p")},
-        "span": function(doc) {return doc.createElement("span")},
-        "face": function(doc) {return doc.createElement("face")},
-        "i": function(doc) {return doc.createElement("i")},
-        "hr": function(doc) {return doc.createElement("hr")},
-        "b": function(doc) {return doc.createElement("b")},
-        "center": function(doc) {return doc.createElement("center")},
-        "th": function(doc) {return doc.createElement("th")},
-        "h1": function(doc) {return doc.createElement("h1")},
-        "h2": function(doc) {return doc.createElement("h2")},
-        "h3": function(doc) {return doc.createElement("h3")},
-        "h4": function(doc) {return doc.createElement("h4")},
-        "u": function(doc) {return doc.createElement("u")},
-        "big": function(doc) {return doc.createElement("big")},
-        "small": function(doc) {return doc.createElement("small")}
+        "img": function(doc) {
+            return doc.createElement("img")
+        },
+        "div": function(doc) {
+            return doc.createElement("div")
+        },
+        "a": function(doc) {
+            return doc.createElement("a")
+        },
+        "br": function(doc) {
+            return doc.createElement("br")
+        },
+        "table": function(doc) {
+            return doc.createElement("table")
+        },
+        "tr": function(doc) {
+            return doc.createElement("tr")
+        },
+        "td": function(doc) {
+            return doc.createElement("td")
+        },
+        "label": function(doc) {
+            return doc.createElement("label")
+        },
+        "select": function(doc) {
+            return doc.createElement("select")
+        },
+        "textarea": function(doc) {
+            return doc.createElement("textarea")
+        },
+        "input": function(doc) {
+            return doc.createElement("input")
+        },
+        "option": function(doc) {
+            return doc.createElement("option")
+        },
+        "fieldset": function(doc) {
+            return doc.createElement("fieldset")
+        },
+        "legend": function(doc) {
+            return doc.createElement("legend")
+        },
+        "iframe": function(doc) {
+            return doc.createElement("iframe")
+        },
+        "tbody": function(doc) {
+            return doc.createElement("tbody")
+        },
+        "li": function(doc) {
+            return doc.createElement("li")
+        },
+        "ul": function(doc) {
+            return doc.createElement("ul")
+        },
+        "ol": function(doc) {
+            return doc.createElement("ol")
+        },
+        "font": function(doc) {
+            return doc.createElement("font")
+        },
+        "strong": function(doc) {
+            return doc.createElement("strong")
+        },
+        "p": function(doc) {
+            return doc.createElement("p")
+        },
+        "span": function(doc) {
+            return doc.createElement("span")
+        },
+        "face": function(doc) {
+            return doc.createElement("face")
+        },
+        "i": function(doc) {
+            return doc.createElement("i")
+        },
+        "hr": function(doc) {
+            return doc.createElement("hr")
+        },
+        "b": function(doc) {
+            return doc.createElement("b")
+        },
+        "center": function(doc) {
+            return doc.createElement("center")
+        },
+        "th": function(doc) {
+            return doc.createElement("th")
+        },
+        "h1": function(doc) {
+            return doc.createElement("h1")
+        },
+        "h2": function(doc) {
+            return doc.createElement("h2")
+        },
+        "h3": function(doc) {
+            return doc.createElement("h3")
+        },
+        "h4": function(doc) {
+            return doc.createElement("h4")
+        },
+        "u": function(doc) {
+            return doc.createElement("u")
+        },
+        "big": function(doc) {
+            return doc.createElement("big")
+        },
+        "small": function(doc) {
+            return doc.createElement("small")
+        }
     };
 
     craigslist.fusion.Utilities.addNew = function(tag, parent) {
@@ -7916,6 +8672,7 @@ release the author(s) of any liability related to their usage of this software.
         if (parent) parent.removeChild(node);
     }
 
+    //todo: double check with built in function "escape"
     craigslist.fusion.Utilities.escapeUrl = function(data) {
         if (data == null) {
             return "";
@@ -7994,6 +8751,37 @@ release the author(s) of any liability related to their usage of this software.
             text += Math.floor( Math.random() * 10);
         }
         return text;
+    }
+
+    craigslist.fusion.Utilities.EntityRegx = /&(#(?:x[0-9a-f]+|\d+)|[a-z]+[0-9]*);?/gi;
+    //source: http://www.w3schools.com/tags/ref_entities.asp (note: there are more not yet supported)
+    craigslist.fusion.Utilities.TextEntityMap = {
+        "gt" : ">",
+        "lt": "<",
+        "eq": "=",
+        "quot": "\"",
+        "apos": "\'",
+        "amp": "&",
+        "cent": "¢",
+        "pound": "£",
+        "euro": "€",
+        "sect": "§",
+        "copy": "©",
+        "reg": "®",
+        "trade": "™",
+        "sup2": "²",
+        "sup3": "³",
+        "nbsp": " "
+    }
+
+    craigslist.fusion.Utilities.parseEntity = function(text) {
+        return text.replace(craigslist.fusion.Utilities.EntityRegx, function(group0, group1) {
+            if (group1[0] === "#") {
+                return String.fromCharCode(group1[1].toLowerCase() === "x" ? parseInt(group1.substr(2), 16)  : parseInt(group1.substr(1), 10));
+            } else {
+                return craigslist.fusion.Utilities.TextEntityMap.hasOwnProperty(group1) ? craigslist.fusion.Utilities.TextEntityMap[group1] : group0;
+            }
+        });
     }
 
     craigslist.fusion.Utilities.hover = function(evtObj, obj, hoverStyle, regularStyle, hoverFunc, regularFunc) {
@@ -8331,90 +9119,90 @@ release the author(s) of any liability related to their usage of this software.
                     this.winHandle.parentNode.removeChild(this.winHandle);
                     this.winHandle = null;
                 }
-                    var dim = this.getWindowSize();
+                var dim = this.getWindowSize();
 
-                    if (!width) width = 600;
-                    if (!height) height = 550;
+                if (!width) width = 600;
+                if (!height) height = 550;
 
-                    this.winHandle = this.document.createElement("div");
-                    this.winHandle.id = id;
-                    if (parentWin) {
-                        this.zIndex = parentWin.getZIndex() + 1;
-                    } else {
-                        this.zIndex = 1001;
-                    }
-                    this.winHandle.style.zIndex = this.zIndex;
-                    //this.winHandle.style.height = height + "px";
-                    //this.winHandle.style.width = width + "px";
-                    this.winHandle.style.position = "fixed";
-                    this.winHandle.style.border = "solid";
-                    this.winHandle.style.borderWidth = this.borderWidth + "px";
-                    this.winHandle.style.borderColor = this.decorationColor;
-                    this.winHandle.style.margin="0px";    //this is the difference between offsetLeft and style.left
-                    //see http://www.w3.org/TR/CSS2/box.html
-                    //left + margin + border + padding => content
-                    this.winHandle.style.padding = "0px";
-                    this.winHandle.style.opacity = 1.0;
-                    this.winHandle.style.background = this.backgroundColor;
-                    this.document.body.appendChild(this.winHandle);
+                this.winHandle = this.document.createElement("div");
+                this.winHandle.id = id;
+                if (parentWin) {
+                    this.zIndex = parentWin.getZIndex() + 1;
+                } else {
+                    this.zIndex = 1001;
+                }
+                this.winHandle.style.zIndex = this.zIndex;
+                //this.winHandle.style.height = height + "px";
+                //this.winHandle.style.width = width + "px";
+                this.winHandle.style.position = "fixed";
+                this.winHandle.style.border = "solid";
+                this.winHandle.style.borderWidth = this.borderWidth + "px";
+                this.winHandle.style.borderColor = this.decorationColor;
+                this.winHandle.style.margin="0px";    //this is the difference between offsetLeft and style.left
+                //see http://www.w3.org/TR/CSS2/box.html
+                //left + margin + border + padding => content
+                this.winHandle.style.padding = "0px";
+                this.winHandle.style.opacity = 1.0;
+                this.winHandle.style.background = this.backgroundColor;
+                this.document.body.appendChild(this.winHandle);
 
-                    this.winHandle.style.display = "block";
-                    //this.winHandle.style.top = (dim[1] - height)/2 + "px";
-                    //this.winHandle.style.left = (dim[0] - width)/2 + "px";
-                    this.setWidth(width);
-                    this.setHeight(height);
-                    this.setTop((dim[1] - height)/2);
-                    this.setLeft((dim[0] - width)/2);
-                    this.titleBar = craigslist.fusion.Utilities.addNew("div", this.winHandle);
-                    this.titleBar.style.height = this.titleBarHeight + "px";
-                    this.titleBar.style.width = "100%";
-                    this.titleBar.style.background = this.decorationColor;
+                this.winHandle.style.display = "block";
+                //this.winHandle.style.top = (dim[1] - height)/2 + "px";
+                //this.winHandle.style.left = (dim[0] - width)/2 + "px";
+                this.setWidth(width);
+                this.setHeight(height);
+                this.setTop((dim[1] - height)/2);
+                this.setLeft((dim[0] - width)/2);
+                this.titleBar = craigslist.fusion.Utilities.addNew("div", this.winHandle);
+                this.titleBar.style.height = this.titleBarHeight + "px";
+                this.titleBar.style.width = "100%";
+                this.titleBar.style.background = this.decorationColor;
 
-                    this.title = title;
-                    var titleId = "titleArea" + craigslist.fusion.Utilities.rand(10);
-                    //var text = "<table cellpadding=\"0\" cellspacing=\"0\" width=\"100%\" height=\"100%\" border=\"0\">";
-                    //text += "<tr><td><div id=\"" + titleId + "\" ></div></td>";
-                    //text += "<td width=\"22\"><div id=\"" + closeBtnId + "\" style=\"text-align: center; margin-left:auto; margin-right:auto;\"";
-                    //text += "></div></td></tr></table>";
-                    var table = craigslist.fusion.Utilities.addNew("table", this.titleBar);
+                this.title = title;
+                var titleId = "titleArea" + craigslist.fusion.Utilities.rand(10);
+                //var text = "<table cellpadding=\"0\" cellspacing=\"0\" width=\"100%\" height=\"100%\" border=\"0\">";
+                //text += "<tr><td><div id=\"" + titleId + "\" ></div></td>";
+                //text += "<td width=\"22\"><div id=\"" + closeBtnId + "\" style=\"text-align: center; margin-left:auto; margin-right:auto;\"";
+                //text += "></div></td></tr></table>";
+                var table = craigslist.fusion.Utilities.addNew("table", this.titleBar);
 
-                    table.style.padding = "0px";
-                    table.style.borderSpacing = "0px";
-                    table.style.width = "100%";
-                    table.style.height = "100%";
-                    table.style.border = "0px";
+                table.style.padding = "0px";
+                table.style.borderSpacing = "0px";
+                table.style.width = "100%";
+                table.style.height = "100%";
+                table.style.border = "0px";
 
-                    var tr = craigslist.fusion.Utilities.addNew("tr", table);
+                var tr = craigslist.fusion.Utilities.addNew("tr", table);
 
-                    var td;
-                    //////////////////////////////////////////////
-                    td = craigslist.fusion.Utilities.addNew("td", tr);
-                    td.style.width = this.titleBarHeight + "px";
-                    td.style.padding = "0px";
-                    this.minimizeBtn = this.createButton(td, "thinBtn" + craigslist.fusion.Utilities.rand(10), craigslist.fusion.Utilities.titleIcon, craigslist.fusion.Utilities.titleIconHover , this.onThinBtnMouseDown);
+                var td;
+                //////////////////////////////////////////////
+                td = craigslist.fusion.Utilities.addNew("td", tr);
+                td.style.width = this.titleBarHeight + "px";
+                td.style.padding = "0px";
+                this.minimizeBtn = this.createButton(td, "thinBtn" + craigslist.fusion.Utilities.rand(10), craigslist.fusion.Utilities.titleIcon, craigslist.fusion.Utilities.titleIconHover , this.onThinBtnMouseDown);
 
-                    ///////////////    Minimized title bar ///////////////////////////////////////
-                    this.minimizedTitleBar = craigslist.fusion.Utilities.addNew("div", this.winHandle);
-                    this.minimizedTitleBar.setAttribute("style", "position: absolute;");
-                    this.minimizedTitleBar.style.position = "absolute";
-                    this.minimizedTitleBar.style.zIndex = 10000;
-                    this.minimizedTitleBar.style.left = "50%";
-                    this.minimizedTitleBar.style.top = craigslist.fusion.WindowConfig.smallTitleBarTop;
-                    this.minimizedTitleBar.style.float = "right";
-                    this.minimizedTitleBar.style.opacity = 1;
-                    this.minimizedTitleBar.style.display = "none";
-                    this.minimizedTitleBar.style.width = "80px";
-                    this.minimizedTitleBar.style.height = this.titleBarHeight + "px";
-                    //this.minimizedTitleBar.style.border = "thin solid black";
-                    this.minimizeTitle = true;
+                ///////////////    Minimized title bar ///////////////////////////////////////
+                this.minimizedTitleBar = craigslist.fusion.Utilities.addNew("div", this.winHandle);
+                this.minimizedTitleBar.setAttribute("style", "position: absolute;");
+                this.minimizedTitleBar.style.position = "absolute";
+                this.minimizedTitleBar.style.zIndex = 10000;
+                this.minimizedTitleBar.style.left = "50%";
+                this.minimizedTitleBar.style.top = craigslist.fusion.WindowConfig.smallTitleBarTop;
+                this.minimizedTitleBar.style.float = "right";
+                this.minimizedTitleBar.style.opacity = 1;
+                this.minimizedTitleBar.style.display = "none";
+                this.minimizedTitleBar.style.width = "80px";
+                this.minimizedTitleBar.style.height = this.titleBarHeight + "px";
+                //this.minimizedTitleBar.style.border = "thin solid black";
+                this.minimizeTitle = true;
 
-                    var minBarTbl = craigslist.fusion.Utilities.addNew("table", this.minimizedTitleBar);
-                    minBarTbl.border = "0px";
-                    var miniBarTr = craigslist.fusion.Utilities.addNew("tr", minBarTbl);
-                    var miniBarTd = craigslist.fusion.Utilities.addNew("td", miniBarTr);
-                    this.restoreBtn = this.createButton(miniBarTd, "restoreBtn" + craigslist.fusion.Utilities.rand(10), craigslist.fusion.Utilities.titleIcon, craigslist.fusion.Utilities.titleIconHover, this.onNormalBtnMouseDown);
-                    miniBarTd = craigslist.fusion.Utilities.addNew("td", miniBarTr);
-                    /*
+                var minBarTbl = craigslist.fusion.Utilities.addNew("table", this.minimizedTitleBar);
+                minBarTbl.border = "0px";
+                var miniBarTr = craigslist.fusion.Utilities.addNew("tr", minBarTbl);
+                var miniBarTd = craigslist.fusion.Utilities.addNew("td", miniBarTr);
+                this.restoreBtn = this.createButton(miniBarTd, "restoreBtn" + craigslist.fusion.Utilities.rand(10), craigslist.fusion.Utilities.titleIcon, craigslist.fusion.Utilities.titleIconHover, this.onNormalBtnMouseDown);
+                miniBarTd = craigslist.fusion.Utilities.addNew("td", miniBarTr);
+                /*
                     this.minimizedDragArea = craigslist.fusion.Utilities.addNew("div", miniBarTd);
                     this.minimizedDragArea.style.border = "thin solid black";
                     this.minimizedDragArea.style.width = "18px";
@@ -8424,59 +9212,59 @@ release the author(s) of any liability related to their usage of this software.
                     this.minimizedDragArea.textContent = "&lt;&gt;";
                     this.minimizedDragArea.addEventListener("mousedown", craigslist.fusion.Utilities.runWith(this, this.onTitleAreaMouseDown, "", ""), false);
                     */
-                    this.minimizedDragArea = this.createButton(miniBarTd, "minimizedMoveBtn" + craigslist.fusion.Utilities.rand(10),
-                        craigslist.fusion.Utilities.moveIcon, craigslist.fusion.Utilities.moveIconHover,null, "move");
-                    this.minimizedDragArea.addEventListener("mousedown", craigslist.fusion.Utilities.runWith(this, 
-                        this.onTitleAreaMouseDown, "", ""), false);
+                this.minimizedDragArea = this.createButton(miniBarTd, "minimizedMoveBtn" + craigslist.fusion.Utilities.rand(10),
+                    craigslist.fusion.Utilities.moveIcon, craigslist.fusion.Utilities.moveIconHover,null, "move");
+                this.minimizedDragArea.addEventListener("mousedown", craigslist.fusion.Utilities.runWith(this, 
+                    this.onTitleAreaMouseDown, "", ""), false);
 
-                    miniBarTd = craigslist.fusion.Utilities.addNew("td", miniBarTr);
-                    this.minimizedCloseBtn = this.createButton(miniBarTd, "minimizedCloseBtn" + craigslist.fusion.Utilities.rand(10),
-                        craigslist.fusion.Utilities.closeIcon, craigslist.fusion.Utilities.closeIconHover, this.oncloseBtnMouseDown);
-                    /////////////////////////////////////////////////
+                miniBarTd = craigslist.fusion.Utilities.addNew("td", miniBarTr);
+                this.minimizedCloseBtn = this.createButton(miniBarTd, "minimizedCloseBtn" + craigslist.fusion.Utilities.rand(10),
+                    craigslist.fusion.Utilities.closeIcon, craigslist.fusion.Utilities.closeIconHover, this.oncloseBtnMouseDown);
+                /////////////////////////////////////////////////
 
-                    td = craigslist.fusion.Utilities.addNew("td", tr);
-                    this.titleArea = craigslist.fusion.Utilities.addNew("div", td);
-                    this.titleArea.id = titleId;
+                td = craigslist.fusion.Utilities.addNew("td", tr);
+                this.titleArea = craigslist.fusion.Utilities.addNew("div", td);
+                this.titleArea.id = titleId;
 
-                    /////////////////////////////
-                    td = craigslist.fusion.Utilities.addNew("td", tr);
-                    td.style.width = this.titleBarHeight + "px";
-                    td.style.padding = "0px";
+                /////////////////////////////
+                td = craigslist.fusion.Utilities.addNew("td", tr);
+                td.style.width = this.titleBarHeight + "px";
+                td.style.padding = "0px";
 
-                    if (this.title != null) {
-                        this.titleArea.textContent = title;
-                    }
+                if (this.title != null) {
+                    this.titleArea.textContent = title;
+                }
 
-                    this.closeBtn = this.createButton(td, "closeBtn" + craigslist.fusion.Utilities.rand(10), craigslist.fusion.Utilities.closeIcon, craigslist.fusion.Utilities.closeIconHover, this.oncloseBtnMouseDown);
+                this.closeBtn = this.createButton(td, "closeBtn" + craigslist.fusion.Utilities.rand(10), craigslist.fusion.Utilities.closeIcon, craigslist.fusion.Utilities.closeIconHover, this.oncloseBtnMouseDown);
 
 
-                    this.titleArea.addEventListener("mousedown", craigslist.fusion.Utilities.runWith(this, this.onTitleAreaMouseDown, "", ""), false);
-                    this.titleArea.style.cursor = "move";
-                    this.titleArea.style.overflow = "hidden";
-                    this.titleBar.style.overflow = "hidden";
+                this.titleArea.addEventListener("mousedown", craigslist.fusion.Utilities.runWith(this, this.onTitleAreaMouseDown, "", ""), false);
+                this.titleArea.style.cursor = "move";
+                this.titleArea.style.overflow = "hidden";
+                this.titleBar.style.overflow = "hidden";
 
-                    var contentId = "contentArea" + craigslist.fusion.Utilities.rand(10);
-                    this.contentArea = craigslist.fusion.Utilities.addNew("div", this.winHandle);
-                    this.contentArea.id = contentId;
-                    this.contentArea.style.background = this.backgroundColor;
-                    this.contentArea.style.padding = this.padding + "px";
-                    this.contentArea.style.overflow = "auto";
-                    //this.contentArea.style.overflowX = "hidden";
-                    this.contentArea.style.width = "100% - " + (2 * this.padding);
-                    this.contentArea.style.height = (this.winHandle.offsetHeight - this.titleBar.offsetHeight - 2 * this.borderWidth -
-                        2 * this.padding) + "px";
+                var contentId = "contentArea" + craigslist.fusion.Utilities.rand(10);
+                this.contentArea = craigslist.fusion.Utilities.addNew("div", this.winHandle);
+                this.contentArea.id = contentId;
+                this.contentArea.style.background = this.backgroundColor;
+                this.contentArea.style.padding = this.padding + "px";
+                this.contentArea.style.overflow = "auto";
+                //this.contentArea.style.overflowX = "hidden";
+                this.contentArea.style.width = "100% - " + (2 * this.padding);
+                this.contentArea.style.height = (this.winHandle.offsetHeight - this.titleBar.offsetHeight - 2 * this.borderWidth -
+                    2 * this.padding) + "px";
 
-                    //this.winHandle.addEventListener("mousedown", craigslist.fusion.Utilities.runWith(this, this.onMouseDown, "", ""), false);
-                    //Note: add first so the event propagate to the other mouse move, etc
+                //this.winHandle.addEventListener("mousedown", craigslist.fusion.Utilities.runWith(this, this.onMouseDown, "", ""), false);
+                //Note: add first so the event propagate to the other mouse move, etc
 
-                    craigslist.fusion.Utilities.hover(this.winHandle, null, null, null,
-                        craigslist.fusion.Utilities.runWith(this, this.onWindowMouseOver, "", ""),
-                        craigslist.fusion.Utilities.runWith(this, this.onWindowMouseOut, "", "")
+                craigslist.fusion.Utilities.hover(this.winHandle, null, null, null,
+                    craigslist.fusion.Utilities.runWith(this, this.onWindowMouseOver, "", ""),
+                    craigslist.fusion.Utilities.runWith(this, this.onWindowMouseOut, "", "")
                     );
 
-                    this.contentArea.addEventListener("mousedown", craigslist.fusion.Utilities.runWith(this, this.onMouseDown, "", ""), false);
-                    this.winHandle.addEventListener("mousemove", craigslist.fusion.Utilities.runWith(this, this.onMouseMoveResizeSensor, "", ""), false);
-                    this.winHandle.addEventListener("mousedown", craigslist.fusion.Utilities.runWith(this, this.onMouseDownResizeSensor, "", ""), false);
+                this.contentArea.addEventListener("mousedown", craigslist.fusion.Utilities.runWith(this, this.onMouseDown, "", ""), false);
+                this.winHandle.addEventListener("mousemove", craigslist.fusion.Utilities.runWith(this, this.onMouseMoveResizeSensor, "", ""), false);
+                this.winHandle.addEventListener("mousedown", craigslist.fusion.Utilities.runWith(this, this.onMouseDownResizeSensor, "", ""), false);
                     
                     
                 //}
@@ -8555,21 +9343,21 @@ release the author(s) of any liability related to their usage of this software.
                     //button.style.background = "";
                     button.src = src;
                 }
-            );
+                );
 
             return button;
         }
 
-//        this.onWindowMouseDown = function(evt, param1, param2) {
-//            evt.preventDefault();
-//            evt.stopPropagation();
-//            this.requestFocus(null);
-//            if (this.miniTitleVisible) {
-//                if (this.minimizeTitle) {
-//                    this.minimizedTitleBar.style.display = "block !important";
-//                }
-//            }
-//        }
+        //        this.onWindowMouseDown = function(evt, param1, param2) {
+        //            evt.preventDefault();
+        //            evt.stopPropagation();
+        //            this.requestFocus(null);
+        //            if (this.miniTitleVisible) {
+        //                if (this.minimizeTitle) {
+        //                    this.minimizedTitleBar.style.display = "block !important";
+        //                }
+        //            }
+        //        }
 
         this.onWindowMouseOver = function(evt, param1, param2) {
             if (this.miniTitleVisible) {
@@ -8823,21 +9611,21 @@ release the author(s) of any liability related to their usage of this software.
 
         this.destroy = function(evt) {
             try {
-                    if (this.parentWin) {
-                        this.parentWin.removeWindow(this);
-                    } else {
-                        this.winManager.removeWindow(this);
-                    }
-                    for (var i = this.childWindows.length - 1; i >= 0; i--) {
-                        var win = this.childWindows[i];
-                        this.childWindows.splice(i,1);
-                        win.destroy();
-                    }
-                    this.winHandle.style.display = "none";
-                    this.document.body.removeChild(this.winHandle);
-                    this.onClosed(evt);
+                if (this.parentWin) {
+                    this.parentWin.removeWindow(this);
+                } else {
+                    this.winManager.removeWindow(this);
+                }
+                for (var i = this.childWindows.length - 1; i >= 0; i--) {
+                    var win = this.childWindows[i];
+                    this.childWindows.splice(i,1);
+                    win.destroy();
+                }
+                this.winHandle.style.display = "none";
+                this.document.body.removeChild(this.winHandle);
+                this.onClosed(evt);
             } catch (err) {
-                    //error handling here
+                //error handling here
                 craigslist.fusion.Utilities.notify("err: ", err);
             }
         }
@@ -8875,27 +9663,27 @@ release the author(s) of any liability related to their usage of this software.
                 this.onVisible(this.visible);
             }
             if (visible) {
-               var changed = false;
-               var bounds = this.getBounds();
-               if (bounds.top < 0) {
-                bounds.top = 0;
-                changed = true;
-               }
-               if (bounds.left < 0) {
-                bounds.left = 0;
-                changed = true;
-               }
-               if (bounds.width < 50) {
-                bounds.width = 50;
-                changed = true;
-               }
-               if (bounds.height < 50) {
-                bounds.height = 50;
-                changed = true;
-               }
-               if (changed) {
-                   this.setBounds(bounds.top, bounds.left, bounds.width, bounds.height);
-               }
+                var changed = false;
+                var bounds = this.getBounds();
+                if (bounds.top < 0) {
+                    bounds.top = 0;
+                    changed = true;
+                }
+                if (bounds.left < 0) {
+                    bounds.left = 0;
+                    changed = true;
+                }
+                if (bounds.width < 50) {
+                    bounds.width = 50;
+                    changed = true;
+                }
+                if (bounds.height < 50) {
+                    bounds.height = 50;
+                    changed = true;
+                }
+                if (changed) {
+                    this.setBounds(bounds.top, bounds.left, bounds.width, bounds.height);
+                }
             }
         }
 
@@ -9347,11 +10135,11 @@ release the author(s) of any liability related to their usage of this software.
             //} else {
             //    return this.winHandle.offsetWidth;
             //}
-                    return this.winHandle.offsetWidth;
+            return this.winHandle.offsetWidth;
         }
 
         this.getHeight = function() {
-                    /*
+            /*
             var styleHeight = parseInt(this.winHandle.style.height);
             if (styleHeight) {
                 return styleHeight;
@@ -9359,11 +10147,11 @@ release the author(s) of any liability related to their usage of this software.
                 return this.winHandle.offsetHeight;
             }
                     */
-                    return this.winHandle.offsetHeight;
+            return this.winHandle.offsetHeight;
         }
 
         this.getTop = function() {
-                    /*
+            /*
             var styleTop = parseInt(this.winHandle.style.top);
             if (styleTop) {
                 return styleTop;
@@ -9371,11 +10159,11 @@ release the author(s) of any liability related to their usage of this software.
                 return this.winHandle.offsetTop;
             }
                     */
-                    return this.winHandle.offsetTop;
+            return this.winHandle.offsetTop;
         }
 
         this.getLeft = function() {
-                    /*
+            /*
             var styleLeft = parseInt(this.winHandle.style.left);
             if (styleLeft) {
                 return styleLeft;
@@ -9383,7 +10171,7 @@ release the author(s) of any liability related to their usage of this software.
                 return this.winHandle.offsetLeft;
             }
                     */
-                    return this.winHandle.offsetLeft;
+            return this.winHandle.offsetLeft;
         }
 
         this.setTop = function(top) {
@@ -9456,11 +10244,16 @@ release the author(s) of any liability related to their usage of this software.
             this.setWidth(width);
 
             this.onResize(null);
-            //this.setVisible(visible);
+        //this.setVisible(visible);
         }
 
         this.getBounds = function() {
-            return {top : this.getTop(), left : this.getLeft(), width : this.getWidth(), height : this.getHeight()};
+            return {
+                top : this.getTop(), 
+                left : this.getLeft(), 
+                width : this.getWidth(), 
+                height : this.getHeight()
+            };
         }
 
         this.initialize(id, width, height, title, parentWin, doc, browserWin);
@@ -9802,24 +10595,42 @@ release the author(s) of any liability related to their usage of this software.
 
     //------------------------------------------------------------------------------//
     craigslist.fusion.StandardAjaxRequest = function (paramArray) {
+
         this.initialize = function(paramArray) {
             this.url = paramArray.url;
             this.method = paramArray.method;
             this.headers  = paramArray.headers;
             this.contentHandler = paramArray.contentHandler;
             this.data = paramArray.data;
+            if (typeof paramArray.synchronous == "undefined" || paramArray.synchronous == false) {
+                this.synchronous = false;
+            } else {
+                this.synchronous = true;
+            }
         }
 
         this.send = function() {
             this.connection = new XMLHttpRequest();
-            this.connection.open(this.method, this.url, true);
-            if (this.headers) {
-                for (var header in this.headers) {
-                    this.connection.setRequestHeader(header, this.headers[header]);
-                }
+            if (this.synchronous == false) {
+                this.connection.onreadystatechange = craigslist.fusion.Utilities.runWith(this, this.handleReadyState);
             }
-            this.connection.onreadystatechange = craigslist.fusion.Utilities.runWith(this, this.handleReadyState);
-            this.connection.send(this.data);
+
+            try {
+                this.connection.open(this.method, this.url, this.synchronous == false);
+
+                if (this.headers) {
+                    for (var header in this.headers) {
+                        this.connection.setRequestHeader(header, this.headers[header]);
+                    }
+                }
+                    
+                var resp = this.connection.send(this.data);
+                if (this.synchronous) {
+                    this.contentHandler.apply(null, [this.connection]);
+                }
+            } catch (error) {
+            //alert("Failed to connect, error: " + error);
+            }
         }
 
         this.handleReadyState = function() {
@@ -9839,18 +10650,30 @@ release the author(s) of any liability related to their usage of this software.
             this.headers  = paramArray.headers;
             this.contentHandler = paramArray.contentHandler;
             this.data = paramArray.data;
+            if (typeof paramArray.synchronous == "undefined" || paramArray.synchronous == false) {
+                this.synchronous = false;
+            } else {
+                this.synchronous = true;
+            }
         }
         this.send = function() {
-            GM_xmlhttpRequest({
+            var onload = craigslist.fusion.Utilities.runWith(this, this.handleReadyState);
+            if (this.synchronous) {
+                onload = null;
+            }
+            var resp = GM_xmlhttpRequest({
                 method : this.method,
                 url : this.url,
                 headers : this.headers,
-                onreadystatechange : craigslist.fusion.Utilities.runWith(this, this.handleReadyState),
-                data : this.data
+                onload : onload,
+                data : this.data,
+                synchronous: this.synchronous
             });
+            if (this.synchronous) {
+                this.handleReadyState(resp);
+            }
         }
         this.handleReadyState = function(responseDetails, param1, param2) {
-            //alert("responseDetails is: " + responseDetails);
             if (responseDetails.readyState == 4) {
                 if (responseDetails.status == 200) {
                     this.contentHandler(responseDetails);
@@ -9923,7 +10746,7 @@ release the author(s) of any liability related to their usage of this software.
                     topRatio = top / dim[1];
                 }
 
-               //alert("Dim 0 is: " + dim[0] + " , dim1 is: " + dim[1] + " , width ratio : " + widthRatio);
+                //alert("Dim 0 is: " + dim[0] + " , dim1 is: " + dim[1] + " , width ratio : " + widthRatio);
 
                 craigslist.fusion.Utilities.pref_setValue(windowName + "_LeftRatio", "" + leftRatio);
                 craigslist.fusion.Utilities.pref_setValue(windowName + "_TopRatio", "" + topRatio);
@@ -10730,7 +11553,7 @@ release the author(s) of any liability related to their usage of this software.
         }
         
         this.logNoEndTag = function() {
-             vyho.lib.parser.log("end tag not found.");
+            vyho.lib.parser.log("end tag not found.");
         }
 
         this.init();
@@ -10748,96 +11571,126 @@ release the author(s) of any liability related to their usage of this software.
 
         this.definitions = {
             entity: 
-                new vyho.lib.parser.And([
-                    new vyho.lib.parser.Or([
-                        new vyho.lib.parser.And([
-                            new vyho.lib.parser.Token("tagBegin"),
-                            new vyho.lib.parser.Optional([new vyho.lib.parser.Token("entity")]),
-                            new vyho.lib.parser.Token("tagEnd")    //todo: check matching name?
-                        ], {f: processor.startNode, recur: false}),
-                        //new vyho.lib.parser.Token("tag", {f: processor.startNode, recur: false}),
-                        new vyho.lib.parser.AllChars("<>", {f: processor.setText, recur: true}) ,
-                        new vyho.lib.parser.Token("abbreTag", {f: processor.startNode, recur: false}),
+            new vyho.lib.parser.And([
+                new vyho.lib.parser.Or([
+                    new vyho.lib.parser.And([
+                        new vyho.lib.parser.Token("tagBegin"),
+                        new vyho.lib.parser.Optional([new vyho.lib.parser.Token("entity")]),
+                        new vyho.lib.parser.Token("tagEnd")    //todo: check matching name?
+                        ], {
+                            f: processor.startNode, 
+                            recur: false
+                        }),
+                    //new vyho.lib.parser.Token("tag", {f: processor.startNode, recur: false}),
+                    new vyho.lib.parser.AllChars("<>", {
+                        f: processor.setText, 
+                        recur: true
+                    }) ,
+                    new vyho.lib.parser.Token("abbreTag", {
+                        f: processor.startNode, 
+                        recur: false
+                    }),
                     ]),
-                    new vyho.lib.parser.Optional([new vyho.lib.parser.Token("entity")])
+                new vyho.lib.parser.Optional([new vyho.lib.parser.Token("entity")])
                 ]),
             constText: //new vyho.lib.parser.Or(
-                //join([
-                    //new vyho.lib.parser.ConstRange(
-                    //{lo:'a',hi: 'z'}, 
-                    //{lo:'A',hi: 'Z'}, 
-                    //{lo:'0',hi: '9'})
-                //],
-                //vyho.lib.parser.getConstList(" \t\n".split("")))
+            //join([
+            //new vyho.lib.parser.ConstRange(
+            //{lo:'a',hi: 'z'}, 
+            //{lo:'A',hi: 'Z'}, 
+            //{lo:'0',hi: '9'})
+            //],
+            //vyho.lib.parser.getConstList(" \t\n".split("")))
             //),
             new vyho.lib.parser.AllChars("<>"),
             text: new vyho.lib.parser.Or([
                 new vyho.lib.parser.And([
                     new vyho.lib.parser.AllChars("<>"),
                     new vyho.lib.parser.Token("text")
-                ]),
+                    ]),
                 new vyho.lib.parser.AllChars("<>")
-            ]),
+                ]),
             tag: new vyho.lib.parser.And([
                 new vyho.lib.parser.Token("tagBegin"),
                 new vyho.lib.parser.Optional([new vyho.lib.parser.Token("entity")]),
                 new vyho.lib.parser.Token("tagEnd")    //todo: check matching name?
-            ]), //this is not an OR, but an AND, so need to change
+                ]), //this is not an OR, but an AND, so need to change
             tagBegin: new vyho.lib.parser.And([
                 new vyho.lib.parser.Const("<"), 
                 //new vyho.lib.parser.Optional([
                 //    new vyho.lib.parser.Token("space")
                 //]),
-                new vyho.lib.parser.Token("name", {f: processor.setNodeName, recur: true}), 
+                new vyho.lib.parser.Token("name", {
+                    f: processor.setNodeName, 
+                    recur: true
+                }), 
                 new vyho.lib.parser.Optional([
                     new vyho.lib.parser.ConstSet(" \t\n\r"),
                     new vyho.lib.parser.Token("attrList")
-                ]),
+                    ]),
                 new vyho.lib.parser.Optional([
                     new vyho.lib.parser.ConstSet(" \t\n\r")
-                ]), 
+                    ]), 
                 new vyho.lib.parser.Const(">")
-            ]),
+                ]),
             tagEnd: new vyho.lib.parser.And([
                 new vyho.lib.parser.Const("<"),
                 new vyho.lib.parser.Const("/"),
-                new vyho.lib.parser.Token("name", {f: processor.setEndTagName, recur: true}),
-                new vyho.lib.parser.Const(">", {f: processor.endNode, recur: false})
-            ]),
+                new vyho.lib.parser.Token("name", {
+                    f: processor.setEndTagName, 
+                    recur: true
+                }),
+                new vyho.lib.parser.Const(">", {
+                    f: processor.endNode, 
+                    recur: false
+                })
+                ]),
             abbreTag: new vyho.lib.parser.And([
                 new vyho.lib.parser.Const("<"),
                 //new vyho.lib.parser.Optional([
                 //    new vyho.lib.parser.Token("space")
                 //]),
-                new vyho.lib.parser.Token("name", {f: processor.setNodeName, recur: true}),
+                new vyho.lib.parser.Token("name", {
+                    f: processor.setNodeName, 
+                    recur: true
+                }),
                 new vyho.lib.parser.Optional([
                     new vyho.lib.parser.ConstSet(" \t\n\r"),
                     new vyho.lib.parser.Token("attrList")
-                ]),
+                    ]),
                 new vyho.lib.parser.Optional([
                     new vyho.lib.parser.ConstSet(" \t\n\r")
-                ]),
+                    ]),
                 new vyho.lib.parser.Const("/"),  
-                new vyho.lib.parser.Const(">", {f: processor.endNode, recur: false})
-            ]),
+                new vyho.lib.parser.Const(">", {
+                    f: processor.endNode, 
+                    recur: false
+                })
+                ]),
             specialTagNames: new vyho.lib.parser.Or([
                 new vyho.lib.parser.StringSet(["img", "br", "hr"])
-            ]),
+                ]),
             specialTag: new vyho.lib.parser.And([
                 new vyho.lib.parser.Const("<"),
                 //new vyho.lib.parser.Optional([
                 //    new vyho.lib.parser.Token("space")
                 //]),
-                new vyho.lib.parser.StringSet(["img", "br", "hr"], {f: processor.setNodeName, recur: true}),
+                new vyho.lib.parser.StringSet(["img", "br", "hr"], {
+                    f: processor.setNodeName, 
+                    recur: true
+                }),
                 new vyho.lib.parser.Optional([
                     new vyho.lib.parser.ConstSet(" \t\n\r"),
                     new vyho.lib.parser.Token("attrList")
-                ]),
+                    ]),
                 new vyho.lib.parser.Optional([
                     new vyho.lib.parser.ConstSet(" \t\n\r")
+                    ]),
+                new vyho.lib.parser.Const(">", {
+                    f: processor.endNode, 
+                    recur: false
+                })
                 ]),
-                new vyho.lib.parser.Const(">", {f: processor.endNode, recur: false})
-            ]),
             
             name: /*
             new vyho.lib.parser.Or([
@@ -10854,33 +11707,51 @@ release the author(s) of any liability related to their usage of this software.
             ])
             */
             //new vyho.lib.parser.Or([
-                new vyho.lib.parser.And([
-                    new vyho.lib.parser.ConstRange([
-                    {lo:'a',hi: 'z'}, 
-                    {lo:'A',hi: 'Z'}
-                    ], true), 
-                    new vyho.lib.parser.Optional([new vyho.lib.parser.ConstRange([
-                    {lo:'a',hi: 'z'}, 
-                    {lo:'A',hi: 'Z'}, 
-                    {lo:'0',hi: '9'}
-                    ])])
+            new vyho.lib.parser.And([
+                new vyho.lib.parser.ConstRange([
+                {
+                    lo:'a',
+                    hi: 'z'
+                }, 
+
+                {
+                    lo:'A',
+                    hi: 'Z'
+                }
+                ], true), 
+                new vyho.lib.parser.Optional([new vyho.lib.parser.ConstRange([
+                {
+                    lo:'a',
+                    hi: 'z'
+                }, 
+
+                {
+                    lo:'A',
+                    hi: 'Z'
+                }, 
+
+                {
+                    lo:'0',
+                    hi: '9'
+                }
+                ])])
                 ])
-                //,
-                //new vyho.lib.parser.ConstRange([
-                //    {lo:'a',hi: 'z'}, 
-                //    {lo:'A',hi: 'Z'}, 
-                //    {lo:'0',hi: '9'}
-                //    ])
+            //,
+            //new vyho.lib.parser.ConstRange([
+            //    {lo:'a',hi: 'z'}, 
+            //    {lo:'A',hi: 'Z'}, 
+            //    {lo:'0',hi: '9'}
+            //    ])
             //])
             ,
             attrValue: new vyho.lib.parser.Or([
                 new vyho.lib.parser.And([
                     new vyho.lib.parser.AllChars("\'\"<>"),
                     new vyho.lib.parser.Token("attrValue")
-                ]), new vyho.lib.parser.AllChars("\'\"<>")
-            ]),
+                    ]), new vyho.lib.parser.AllChars("\'\"<>")
+                ]),
             space: 
-                /*
+            /*
                 new vyho.lib.parser.Or([ //ConstSet
                     new vyho.lib.parser.And([
                         new vyho.lib.parser.Or(vyho.lib.parser.getConstList(" \t\n\r".split(""))), 
@@ -10889,10 +11760,13 @@ release the author(s) of any liability related to their usage of this software.
                     new vyho.lib.parser.Or(vyho.lib.parser.getConstList(" \t\n\r".split("")))
                 ])
                 */
-              new vyho.lib.parser.ConstSet(" \t\n\r")
-           ,
+            new vyho.lib.parser.ConstSet(" \t\n\r")
+            ,
             attr: new vyho.lib.parser.And([
-                new vyho.lib.parser.Token("name", {f: processor.setAttrName, recur: true}), 
+                new vyho.lib.parser.Token("name", {
+                    f: processor.setAttrName, 
+                    recur: true
+                }), 
                 new vyho.lib.parser.Optional([
                     //new vyho.lib.parser.Optional([
                     //    new vyho.lib.parser.Token("space")
@@ -10902,15 +11776,22 @@ release the author(s) of any liability related to their usage of this software.
                     //    new vyho.lib.parser.Token("space")
                     //]),
                     new vyho.lib.parser.Const("\""), 
-                    new vyho.lib.parser.Optional([new vyho.lib.parser.AllChars("\'\"<>", {f: processor.setAttrValue, recur: true})]), 
+                    new vyho.lib.parser.Optional([new vyho.lib.parser.AllChars("\'\"<>", {
+                        f: processor.setAttrValue, 
+                        recur: true
+                    })]), 
                     new vyho.lib.parser.Const("\"")
-                ])
-            ], {f: processor.startAttribute, recur: false, f_e: processor.endAttribute}),
+                    ])
+                ], {
+                    f: processor.startAttribute, 
+                    recur: false, 
+                    f_e: processor.endAttribute
+                }),
             attrList: new vyho.lib.parser.And([
-                    new vyho.lib.parser.Token("attr"), 
-                    new vyho.lib.parser.Optional(
-                        [new vyho.lib.parser.ConstSet(" \t\n\r"),  
-                        new vyho.lib.parser.Token("attrList")])
+                new vyho.lib.parser.Token("attr"), 
+                new vyho.lib.parser.Optional(
+                    [new vyho.lib.parser.ConstSet(" \t\n\r"),  
+                    new vyho.lib.parser.Token("attrList")])
                 ])
         }
 
@@ -11037,7 +11918,6 @@ release the author(s) of any liability related to their usage of this software.
                 this.stats["_" + name] = 1;
             } else {
                 this.stats["_" + name] += 1;
-                //alert("it is: " + this.stats["_" + name])
             }
         }
         
@@ -11092,8 +11972,8 @@ release the author(s) of any liability related to their usage of this software.
     try {
         var chrome_browser = navigator.userAgent.toLowerCase().indexOf('chrome') > -1;
         if (chrome_browser) {
-                new craigslist.fusion.CraigslistFusion(window);
-                return;
+            new craigslist.fusion.CraigslistFusion(window);
+            return;
         }
         
         var isGreaseMonkeyScript = false;
@@ -11120,4 +12000,3 @@ release the author(s) of any liability related to their usage of this software.
     } catch (e) {
     }
 })();
-
