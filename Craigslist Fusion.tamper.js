@@ -10,7 +10,7 @@
 // @exclude       http://forums.craigslist.*/*
 // 
 // @require       http://usocheckup.redirectme.net/57662.js
-// @version 9.8.9
+// @version 9.8.9dgr1
 // ==/UserScript==
 /*
  * commented out tld == top level domain
@@ -18,6 +18,8 @@
  */
 
 /*  Copyright (c) 2009-2013 By Vy Ho
+  9.8.9dgr:
+   - show location in inline preview and in detail preview subject
   9.8.9:
    - Fixed parsing html entity code to support more entities
   9.8.8:
@@ -3884,6 +3886,13 @@ release the author(s) of any liability related to their usage of this software.
                         }
 
                         var subDetailText = this.removeTags(detailText);
+                        
+                        // DGR - Add location to inline preview text
+                        if (location != null) {
+                            subDetailText = location[1] + " - " + subDetailText;
+                        }
+                        // /DGR
+                        
                         //remove all tags (what if escaped?)
                         var subTextLength = this.preferences.getPreviewTextLength().getValue();
                         
@@ -5220,15 +5229,22 @@ release the author(s) of any liability related to their usage of this software.
             if (subjText.indexOf("$") < 0) {
                 subjText += " - " + price;
             }
-            if (subjText.indexOf("(") < 0) {
-                if (typeof location != "undefined" && location != null) {
-                    subjText += " (" + location[1] + ")";
-                }
-            }
+            // DGR - deleted
+            //if (subjText.indexOf("(") < 0) {
+            //    if (typeof location != "undefined" && location != null) {
+            //        subjText += " (" + location[1] + ")";
+            //    }
+            //}
+            // /DGR
             
             var textNode = craigslist.fusion.Utilities.newText(subjText, subject);
 
             if (location != null) {
+                // DGR - Add location after preview subject
+                craigslist.fusion.Utilities.addNew("br", subject);
+                craigslist.fusion.Utilities.newText(location[1], subject);
+                // /DGR
+                  
                 textNode = craigslist.fusion.Utilities.newText("  ", subject);
 
                 var mapLink = craigslist.fusion.Utilities.addNew("a", subject);
