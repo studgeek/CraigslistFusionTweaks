@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name          Craigslist Fusion
+// @name          Craigslist Fusion DGR
 // @description   View craigslist listing, image previews, emails, details all in one.
 // @match       http://*.craigslist.org/
 // @match       http://*.craigslist.ca/
