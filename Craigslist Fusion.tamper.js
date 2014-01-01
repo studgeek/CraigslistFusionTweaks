@@ -10,7 +10,7 @@
 // @exclude       http://forums.craigslist.*/*
 // 
 // @require       http://usocheckup.redirectme.net/57662.js
-// @version 9.8.9dgr1
+// @version 9.8.9dgr2
 // ==/UserScript==
 /*
  * commented out tld == top level domain
@@ -18,6 +18,9 @@
  */
 
 /*  Copyright (c) 2009-2013 By Vy Ho
+  9.8.9dgr2:
+    - Use street address when available for maps (127 Functon Ave)
+    - If not available use the interaction (4th St and Irving)
   9.8.9dgr:
    - show location in inline preview and in detail preview subject
   9.8.9:
@@ -5031,8 +5034,15 @@ release the author(s) of any liability related to their usage of this software.
 
             if (craigslist.fusion.Utilities.isEmpty(xstreet0) == false && craigslist.fusion.Utilities.isEmpty(city) == false) {
                 address = xstreet0;
-                if (craigslist.fusion.Utilities.isEmpty(xstreet1) == false) {
-                    address = xstreet1;	//address + " at " + 
+                // DGR - Keep xtreet0 if its a full street address "120 Funcston Ave"
+                //if (craigslist.fusion.Utilities.isEmpty(xstreet1) == false) {
+                if (craigslist.fusion.Utilities.isEmpty(xstreet1) == false && !xstreet0.match(/[\d]+ /)) {
+                // /DGR
+                    // DGR
+                    //If its a two part address then join with and since Google Maps can handle that - "4th St and Irving"
+                    address = xstreet0 + " and " + xstreet1; 
+                    //address = xstreet1;	//address + " at " + 
+                    // /DGR
                 }
 
                 address = address + ", " + city;
